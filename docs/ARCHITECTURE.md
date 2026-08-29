@@ -21,7 +21,7 @@ The source of truth remains `/etc/sb-manager/state.json` and its protected secre
 - `internal/api`: HTML/API transport, authentication gates, CSRF and Agent endpoints.
 - `internal/runner`: the only mapping from Web actions to `sb` arguments. It never invokes a shell.
 - `internal/agent`: one-time enrollment, Ed25519 identity, heartbeat and task execution.
-- `internal/storage`: bbolt users, sessions, servers, tasks, enrollments and audit events.
+- `internal/storage`: SQLite users, sessions, servers, tasks, enrollments and audit events.
 - `web`: embedded server-rendered HTML, CSS and JavaScript.
 
 ## Local mode
@@ -68,14 +68,14 @@ Batch actions create one task per eligible server. This intentionally does not p
 
 ## Storage
 
-The controller uses a single bbolt database with these buckets:
+The controller uses a single SQLite database with these tables:
 
-- users
-- sessions
-- servers
-- tasks
-- enrollments
-- audit
+- `users`
+- `sessions`
+- `servers`
+- `tasks`
+- `enrollments`
+- `audit`
 
 Agent private keys are not in the controller database. Node secrets remain exclusively in sb-manager storage on their target server.
 

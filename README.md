@@ -11,9 +11,11 @@
 - 本机 `sb` CLI 安全调用和命令白名单
 - 状态、节点、核心能力、BBR、Hysteria2 UDP 缓冲区查看
 - BBR/HY2/core 操作任务和任务状态
-- bbolt 控制端元数据
+- SQLite 控制端元数据（WAL、单文件、可直接备份）
 - 一次性 enrollment token
 - Agent Ed25519 身份、心跳、轮询任务和结果上报
+- 多服务器清单、批量 BBR/HY2/核心/备份/健康任务、失败阈值和审计记录
+- 节点新增/编辑/启停/删除、用户、分享链接和证书操作 API
 - systemd/OpenRC 服务文件
 - amd64/arm64/armv7 交叉编译
 

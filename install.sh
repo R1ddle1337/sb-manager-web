@@ -10,6 +10,7 @@ VAR_DIR=${SBM_WEB_VAR:-/var/lib/sb-manager-web}
 LOG_DIR=${SBM_WEB_LOG:-/var/log/sb-manager-web}
 SYSTEMD_DIR=${SBM_WEB_SYSTEMD_DIR:-/etc/systemd/system}
 OPENRC_DIR=${SBM_WEB_OPENRC_DIR:-/etc/init.d}
+SERVICE_USER=${SBM_WEB_SERVICE_USER:-sbweb}
 VERSION=${SBM_WEB_VERSION:-latest}
 REPO=${SBM_WEB_REPO:-R1ddle1337/sb-manager-web}
 NO_START=0
@@ -76,6 +77,13 @@ if [[ ${SBM_WEB_SKIP_VERIFY:-0} != 1 ]]; then
 fi
 
 mkdir -p "$LIB_DIR" "$BIN_DIR" "$ETC_DIR" "$VAR_DIR" "$LOG_DIR"
+if [[ "$SERVICE_USER" != root ]] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
+  if command -v groupadd >/dev/null 2>&1; then groupadd --system "$SERVICE_USER" 2>/dev/null || true
+  elif command -v addgroup >/dev/null 2>&1; then addgroup -S "$SERVICE_USER" 2>/dev/null || true; fi
+  nologin=$(command -v nologin || true); nologin=${nologin:-/sbin/nologin}
+  if command -v useradd >/dev/null 2>&1; then useradd --system --gid "$SERVICE_USER" --home-dir "$VAR_DIR" --shell "$nologin" "$SERVICE_USER"
+  elif command -v adduser >/dev/null 2>&1; then adduser -S -D -H -h "$VAR_DIR" -s "$nologin" -G "$SERVICE_USER" "$SERVICE_USER"; fi
+fi
 install -m 0755 "$tmp/sb-web" "$LIB_DIR/sb-web"
 ln -sfn "$LIB_DIR/sb-web" "$BIN_DIR/sb-web"
 if [[ ! -e "$ETC_DIR/config.json" ]]; then
@@ -86,6 +94,7 @@ if [[ ! -e "$ETC_DIR/config.json" ]]; then
   "data_dir": "$VAR_DIR",
   "database": "$VAR_DIR/web.db",
   "log_dir": "$LOG_DIR",
+  "helper_socket": "/run/sb-manager-web/helper.sock",
   "tls": {"enabled": false, "cert_file": "", "key_file": ""},
   "agent": {"enabled": false, "controller_url": "", "identity_file": "$VAR_DIR/agent-identity/ed25519.json", "heartbeat_interval": "30s"},
   "tasks": {"default_timeout": "10m", "batch_concurrency": 1, "failure_stop_percent": 25}
@@ -93,28 +102,56 @@ if [[ ! -e "$ETC_DIR/config.json" ]]; then
 EOF_CONFIG
   "$BIN_DIR/sb-web" init --config "$ETC_DIR/config.json"
 fi
+chown -R "$SERVICE_USER:$SERVICE_USER" "$ETC_DIR" "$VAR_DIR" "$LOG_DIR" 2>/dev/null || true
+chmod 0750 "$ETC_DIR" "$VAR_DIR" "$LOG_DIR"
 if [[ -d "$SYSTEMD_DIR" ]]; then
   install -m 0644 /dev/stdin "$SYSTEMD_DIR/sb-manager-web.service" <<EOF_SYSTEMD
 [Unit]
 Description=sb-manager Go WebUI
-After=network-online.target
+After=network-online.target sb-manager-web-helper.service
 Wants=network-online.target
+Requires=sb-manager-web-helper.service
 
 [Service]
 Type=simple
 ExecStart=$BIN_DIR/sb-web server --config $ETC_DIR/config.json
 Restart=on-failure
 RestartSec=3s
-User=root
+User=$SERVICE_USER
+Group=$SERVICE_USER
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=$ETC_DIR /etc/sb-manager /etc/sysctl.d $VAR_DIR /var/lib/sb-manager $LOG_DIR /var/log/sb-manager /run/sb-manager-web /run/sb-manager $LIB_DIR /usr/local/lib/sb-manager $BIN_DIR /usr/local/bin
+ReadWritePaths=$VAR_DIR $LOG_DIR /run/sb-manager-web
 
 [Install]
 WantedBy=multi-user.target
 EOF_SYSTEMD
+  install -m 0644 /dev/stdin "$SYSTEMD_DIR/sb-manager-web-helper.service" <<EOF_HELPER_SYSTEMD
+[Unit]
+Description=sb-manager WebUI privileged helper
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$BIN_DIR/sb-web helper --config $ETC_DIR/config.json
+Restart=on-failure
+RestartSec=3s
+User=root
+Group=$SERVICE_USER
+UMask=0007
+RuntimeDirectory=sb-manager-web
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/sb-manager /etc/sysctl.d /var/lib/sb-manager /var/log/sb-manager /run/sb-manager /run/sb-manager-web $LIB_DIR /usr/local/lib/sb-manager $BIN_DIR /usr/local/bin
+
+[Install]
+WantedBy=multi-user.target
+EOF_HELPER_SYSTEMD
   install -m 0644 /dev/stdin "$SYSTEMD_DIR/sb-manager-web-agent.service" <<EOF_AGENT_SYSTEMD
 [Unit]
 Description=sb-manager WebUI remote Agent
@@ -144,16 +181,29 @@ name="sb-manager-web"
 description="sb-manager Go WebUI"
 command="$BIN_DIR/sb-web"
 command_args="server --config $ETC_DIR/config.json"
-command_user="root:root"
+command_user="$SERVICE_USER:$SERVICE_USER"
 supervisor="supervise-daemon"
-supervise_daemon_args="--stdout /var/log/sb-manager-web/server.log --stderr /var/log/sb-manager-web/server.err.log"
-output_log="/var/log/sb-manager-web/server.log"
-error_log="/var/log/sb-manager-web/server.err.log"
+supervise_daemon_args="--stdout $LOG_DIR/server.log --stderr $LOG_DIR/server.err.log"
+output_log="$LOG_DIR/server.log"
+error_log="$LOG_DIR/server.err.log"
 pidfile="/run/\${RC_SVCNAME}.pid"
 command_background="yes"
 respawn_delay=3
-depend() { need net; after firewall; }
+depend() { need net sb-manager-web-helper; after firewall; }
 EOF_OPENRC
+  install -m 0755 /dev/stdin "$OPENRC_DIR/sb-manager-web-helper" <<EOF_HELPER_OPENRC
+#!/sbin/openrc-run
+name="sb-manager-web-helper"
+description="sb-manager WebUI privileged helper"
+command="$BIN_DIR/sb-web"
+command_args="helper --config $ETC_DIR/config.json"
+command_user="root:$SERVICE_USER"
+supervisor="supervise-daemon"
+pidfile="/run/\${RC_SVCNAME}.pid"
+command_background="yes"
+respawn_delay=3
+start_pre() { checkpath -d -m 0750 -o root:$SERVICE_USER /run/sb-manager-web; }
+EOF_HELPER_OPENRC
   install -m 0755 /dev/stdin "$OPENRC_DIR/sb-manager-web-agent" <<EOF_AGENT_OPENRC
 #!/sbin/openrc-run
 name="sb-manager-web-agent"
@@ -174,9 +224,11 @@ fi
 if [[ "$NO_START" == 0 ]]; then
   if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
-    systemctl enable --now sb-manager-web.service
+    systemctl enable --now sb-manager-web-helper.service sb-manager-web.service
   elif command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then
+    rc-update add sb-manager-web-helper default || true
     rc-update add sb-manager-web default || true
+    rc-service sb-manager-web-helper start
     rc-service sb-manager-web start
   else
     echo '未发现 systemd/OpenRC；请手动运行 sb-web server。' >&2

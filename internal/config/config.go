@@ -31,23 +31,25 @@ type TaskConfig struct {
 }
 
 type Config struct {
-	Listen   string      `json:"listen"`
-	SBPath   string      `json:"sb_path"`
-	DataDir  string      `json:"data_dir"`
-	Database string      `json:"database"`
-	LogDir   string      `json:"log_dir"`
-	TLS      TLSConfig   `json:"tls"`
-	Agent    AgentConfig `json:"agent"`
-	Tasks    TaskConfig  `json:"tasks"`
+	Listen       string      `json:"listen"`
+	SBPath       string      `json:"sb_path"`
+	DataDir      string      `json:"data_dir"`
+	Database     string      `json:"database"`
+	LogDir       string      `json:"log_dir"`
+	HelperSocket string      `json:"helper_socket"`
+	TLS          TLSConfig   `json:"tls"`
+	Agent        AgentConfig `json:"agent"`
+	Tasks        TaskConfig  `json:"tasks"`
 }
 
 func Defaults() Config {
 	return Config{
-		Listen:   "127.0.0.1:9091",
-		SBPath:   "/usr/local/bin/sb",
-		DataDir:  "/var/lib/sb-manager-web",
-		Database: "/var/lib/sb-manager-web/web.db",
-		LogDir:   "/var/log/sb-manager-web",
+		Listen:       "127.0.0.1:9091",
+		SBPath:       "/usr/local/bin/sb",
+		DataDir:      "/var/lib/sb-manager-web",
+		Database:     "/var/lib/sb-manager-web/web.db",
+		LogDir:       "/var/log/sb-manager-web",
+		HelperSocket: "/run/sb-manager-web/helper.sock",
 		Agent: AgentConfig{
 			IdentityFile:      "/var/lib/sb-manager-web/agent-identity/ed25519.key",
 			HeartbeatInterval: "30s",

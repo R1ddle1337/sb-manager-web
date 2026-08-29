@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
 	"io"
+	"net"
 	"net/http"
+	"os"
 	"path"
 	"regexp"
 	"strconv"
@@ -20,11 +23,11 @@ import (
 
 	"github.com/R1ddle1337/sb-manager-web/internal/auth"
 	"github.com/R1ddle1337/sb-manager-web/internal/config"
+	"github.com/R1ddle1337/sb-manager-web/internal/helper"
 	"github.com/R1ddle1337/sb-manager-web/internal/runner"
 	"github.com/R1ddle1337/sb-manager-web/internal/storage"
 	"github.com/R1ddle1337/sb-manager-web/internal/types"
 	"github.com/R1ddle1337/sb-manager-web/web"
-	"go.etcd.io/bbolt"
 )
 
 const (
@@ -34,11 +37,19 @@ const (
 )
 
 type Server struct {
-	cfg    config.Config
-	store  *storage.Store
-	auth   *auth.Manager
-	runner runner.Runner
-	mu     sync.Mutex
+	cfg     config.Config
+	store   *storage.Store
+	auth    *auth.Manager
+	runner  runner.Runner
+	mu      sync.Mutex
+	sem     chan struct{}
+	loginMu sync.Mutex
+	logins  map[string]loginAttempt
+}
+
+type loginAttempt struct {
+	Count        int
+	BlockedUntil time.Time
 }
 
 func New(cfg config.Config, store *storage.Store) (*Server, string, error) {
@@ -53,7 +64,7 @@ func New(cfg config.Config, store *storage.Store) (*Server, string, error) {
 	if !created {
 		password = ""
 	}
-	return &Server{cfg: cfg, store: store, auth: authManager, runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}}, password, nil
+	return &Server{cfg: cfg, store: store, auth: authManager, runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}, sem: make(chan struct{}, cfg.Tasks.Concurrency), logins: make(map[string]loginAttempt)}, password, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -74,6 +85,9 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -134,10 +148,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if ip == "" {
+		ip = r.RemoteAddr
+	}
+	if !s.loginAllowed(ip) {
+		http.Error(w, "登录尝试过多，请稍后再试", http.StatusTooManyRequests)
+		return
+	}
 	if username == "" || len(password) > 256 || !s.auth.Authenticate(username, password) {
+		s.recordLoginFailure(ip)
 		http.Error(w, "用户名或密码错误", http.StatusUnauthorized)
 		return
 	}
+	s.clearLoginFailures(ip)
 	session, err := s.auth.NewSession(username)
 	if err != nil {
 		http.Error(w, "session error", http.StatusInternalServerError)
@@ -146,6 +170,34 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: session.ID, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 43200})
 	http.SetCookie(w, &http.Cookie{Name: csrfCookie, Value: session.CSRF, Path: "/", HttpOnly: false, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: 43200})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (s *Server) loginAllowed(ip string) bool {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	attempt := s.logins[ip]
+	return !attempt.BlockedUntil.After(time.Now())
+}
+
+func (s *Server) recordLoginFailure(ip string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	attempt := s.logins[ip]
+	attempt.Count++
+	if attempt.Count >= 5 {
+		minutes := attempt.Count - 4
+		if minutes > 15 {
+			minutes = 15
+		}
+		attempt.BlockedUntil = time.Now().Add(time.Duration(minutes) * time.Minute)
+	}
+	s.logins[ip] = attempt
+}
+
+func (s *Server) clearLoginFailures(ip string) {
+	s.loginMu.Lock()
+	delete(s.logins, ip)
+	s.loginMu.Unlock()
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +275,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.singleJSONAction(w, r, "bbr.status")
 	case "/api/v1/hy2-buffer/status":
 		s.singleJSONAction(w, r, "hy2-buffer.status")
+	case "/api/v1/certificates":
+		s.singleJSONAction(w, r, "cert.list")
 	case "/api/v1/logs":
 		s.plainAction(w, r, "logs")
 	case "/api/v1/servers":
@@ -314,7 +368,7 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: "batch_" + batchID + "_" + serverID}
+		task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: "batch_" + batchID + "_" + serverID, BatchID: "batch_" + batchID}
 		if s.store.PutTask(task) != nil {
 			continue
 		}
@@ -357,11 +411,15 @@ func (s *Server) recordAudit(actor, action string, serverIDs, taskIDs []string, 
 }
 
 func (s *Server) singleJSONAction(w http.ResponseWriter, r *http.Request, action string) {
+	s.jsonAction(w, r, action, nil)
+}
+
+func (s *Server) jsonAction(w http.ResponseWriter, r *http.Request, action string, args map[string]any) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
 		return
 	}
-	result, err := s.runLocal(action, nil)
+	result, err := s.runLocal(action, args)
 	if err != nil {
 		writeRunnerError(w, err, result)
 		return
@@ -494,6 +552,33 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 		s.enqueueAction(w, serverID, request)
 		return
 	}
+	if len(parts) == 6 && parts[4] == "nodes" && r.Method == http.MethodGet {
+		if serverID != types.ServerLocal {
+			writeError(w, http.StatusConflict, "AGENT_ASYNC_ONLY", "远程节点详情请通过任务获取", nil)
+			return
+		}
+		s.jsonAction(w, r, "node.show", map[string]any{"id": parts[5]})
+		return
+	}
+	if len(parts) == 7 && parts[4] == "nodes" && parts[6] == "share" && r.Method == http.MethodGet {
+		if serverID != types.ServerLocal {
+			writeError(w, http.StatusConflict, "AGENT_ASYNC_ONLY", "远程分享链接请通过任务获取", nil)
+			return
+		}
+		var args map[string]any
+		if user := r.URL.Query().Get("user"); user != "" {
+			args = map[string]any{"id": parts[5], "user_id": user}
+		} else {
+			args = map[string]any{"id": parts[5]}
+		}
+		result, err := s.runLocal("node.share", args)
+		if err != nil {
+			writeRunnerError(w, err, result)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"share": strings.TrimSpace(result.Stdout)})
+		return
+	}
 	if len(parts) == 7 && parts[4] == "nodes" && r.Method == http.MethodPost {
 		if parts[6] != "enable" && parts[6] != "disable" && parts[6] != "delete" {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "节点操作不存在", nil)
@@ -501,6 +586,47 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		request := actionRequest{Action: "node." + parts[6], Args: map[string]any{"id": parts[5]}, IdempotencyKey: r.Header.Get("Idempotency-Key")}
 		s.enqueueAction(w, serverID, request)
+		return
+	}
+	if len(parts) == 7 && parts[4] == "nodes" && parts[6] == "users" && r.Method == http.MethodGet {
+		if serverID != types.ServerLocal {
+			writeError(w, http.StatusConflict, "AGENT_ASYNC_ONLY", "远程用户列表请通过任务获取", nil)
+			return
+		}
+		s.jsonAction(w, r, "users.list", map[string]any{"node_id": parts[5]})
+		return
+	}
+	if len(parts) == 7 && parts[4] == "nodes" && parts[6] == "users" && r.Method == http.MethodPost {
+		var fields map[string]any
+		if err := decodeBody(r, &fields); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		fields["node_id"], fields["user_id"] = parts[5], firstNonEmptyString(fields["user_id"])
+		s.enqueueAction(w, serverID, actionRequest{Action: "user.add", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")})
+		return
+	}
+	if len(parts) == 9 && parts[4] == "nodes" && parts[6] == "users" && r.Method == http.MethodPost {
+		verb := parts[8]
+		if verb != "enable" && verb != "disable" && verb != "delete" && verb != "rotate" {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "用户操作不存在", nil)
+			return
+		}
+		s.enqueueAction(w, serverID, actionRequest{Action: "user." + verb, Args: map[string]any{"node_id": parts[5], "user_id": parts[7]}, IdempotencyKey: r.Header.Get("Idempotency-Key")})
+		return
+	}
+	if len(parts) == 5 && parts[4] == "certificates" && r.Method == http.MethodPost {
+		var fields map[string]any
+		if err := decodeBody(r, &fields); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		request := actionRequest{Action: "cert.issue", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")}
+		s.enqueueAction(w, serverID, request)
+		return
+	}
+	if len(parts) == 5 && parts[4] == "backup" && r.Method == http.MethodPost {
+		s.enqueueAction(w, serverID, actionRequest{Action: "backup.create", Args: map[string]any{}, IdempotencyKey: r.Header.Get("Idempotency-Key")})
 		return
 	}
 	if len(parts) == 5 && parts[4] == "capabilities" && r.Method == http.MethodGet {
@@ -574,12 +700,13 @@ func firstNonEmptyString(value any) string {
 }
 
 func (s *Server) executeLocal(task types.Task) {
-	command, err := runner.ActionCommand(task.Action, task.Args)
-	if err != nil {
-		s.finishTask(task.ID, false, "", err.Error())
+	s.sem <- struct{}{}
+	defer func() { <-s.sem }()
+	if stop, _ := s.store.BatchShouldStop(task.BatchID, s.cfg.Tasks.FailureStopPct); stop {
+		s.finishTask(task.ID, false, "", "batch stopped after reaching failure threshold")
 		return
 	}
-	result, err := s.runner.Run(context.Background(), command...)
+	result, err := s.runLocal(task.Action, task.Args)
 	if err != nil {
 		s.finishTask(task.ID, false, result.Stdout, redact(result.Stderr+"\n"+err.Error()))
 		return
@@ -714,8 +841,8 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
 			return
 		}
-		task, err := s.store.ClaimPendingTask(server.ID)
-		if errors.Is(err, bbolt.ErrBucketNotFound) {
+		task, err := s.store.ClaimPendingTask(server.ID, s.cfg.Tasks.FailureStopPct)
+		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusOK, map[string]any{"task": nil})
 			return
 		}
@@ -783,6 +910,11 @@ func (s *Server) verifyAgent(r *http.Request, body []byte) (types.Server, bool) 
 }
 
 func (s *Server) runLocal(action string, args map[string]any) (runner.Result, error) {
+	if s.cfg.HelperSocket != "" {
+		if _, err := os.Stat(s.cfg.HelperSocket); err == nil {
+			return helper.Client{Socket: s.cfg.HelperSocket, Timeout: s.cfg.Tasks.DefaultTimeout}.Run(context.Background(), action, args)
+		}
+	}
 	command, err := runner.ActionCommand(action, args)
 	if err != nil {
 		return runner.Result{}, err

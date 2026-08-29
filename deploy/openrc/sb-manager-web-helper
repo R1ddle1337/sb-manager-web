@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+
+name="sb-manager-web-helper"
+description="sb-manager WebUI privileged helper"
+command="/usr/local/bin/sb-web"
+command_args="helper --config /etc/sb-manager-web/config.json"
+command_user="root:sbweb"
+supervisor="supervise-daemon"
+pidfile="/run/${RC_SVCNAME}.pid"
+command_background="yes"
+respawn_delay=3
+
+start_pre() {
+  checkpath -d -m 0750 -o root:sbweb /run/sb-manager-web
+}

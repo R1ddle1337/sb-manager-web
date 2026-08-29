@@ -17,6 +17,8 @@ import (
 	"github.com/R1ddle1337/sb-manager-web/internal/api"
 	"github.com/R1ddle1337/sb-manager-web/internal/auth"
 	"github.com/R1ddle1337/sb-manager-web/internal/config"
+	"github.com/R1ddle1337/sb-manager-web/internal/helper"
+	"github.com/R1ddle1337/sb-manager-web/internal/runner"
 	"github.com/R1ddle1337/sb-manager-web/internal/storage"
 )
 
@@ -45,6 +47,8 @@ func run(args []string) error {
 		return serviceAction(args[0])
 	case "agent":
 		return runAgent(args[1:])
+	case "helper":
+		return runHelper(args[1:])
 	case "join":
 		return join(args[1:])
 	case "status":
@@ -222,6 +226,26 @@ func runAgent(args []string) error {
 		return nil
 	}
 	return err
+}
+
+func runHelper(args []string) error {
+	fs := flag.NewFlagSet("helper", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	configPath := fs.String("config", defaultConfigPath, "配置文件")
+	socket := fs.String("socket", "", "覆盖 Unix Socket")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if *socket != "" {
+		cfg.HelperSocket = *socket
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return helper.Server{Socket: cfg.HelperSocket, Runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}}.Serve(ctx)
 }
 
 func join(args []string) error {

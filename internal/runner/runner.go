@@ -26,6 +26,7 @@ type Runner struct {
 var safeVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
 var safeID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,47}$`)
 var safeProtocol = regexp.MustCompile(`^(vmess|ss|anytls|hy2|trojan|tuic|vless|naive|shadowtls|snell)$`)
+var safeDomain = regexp.MustCompile(`^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$`)
 
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	if r.Path == "" {
@@ -119,9 +120,86 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return nodeAddCommand(args)
 	case "node.set":
 		return nodeSetCommand(args)
+	case "node.show":
+		id, err := requiredID(args, "id")
+		if err != nil {
+			return nil, err
+		}
+		return JSONArgs("node", "show", id), nil
+	case "node.share":
+		id, err := requiredID(args, "id")
+		if err != nil {
+			return nil, err
+		}
+		command := []string{"share", id}
+		if userID, _ := args["user_id"].(string); userID != "" {
+			if !safeID.MatchString(userID) {
+				return nil, errors.New("invalid user id")
+			}
+			command = append(command, "--user", userID)
+		}
+		return command, nil
+	case "users.list":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		return JSONArgs("user", "list", nodeID), nil
+	case "user.add":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		userID, err := requiredID(args, "user_id")
+		if err != nil {
+			return nil, err
+		}
+		name, _ := args["name"].(string)
+		if name == "" {
+			name = userID
+		}
+		if len(name) > 128 || strings.ContainsAny(name, "\r\n\x00") {
+			return nil, errors.New("invalid user name")
+		}
+		return []string{"user", "add", nodeID, userID, name}, nil
+	case "user.enable", "user.disable", "user.delete", "user.rotate":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		userID, err := requiredID(args, "user_id")
+		if err != nil {
+			return nil, err
+		}
+		return []string{"user", strings.TrimPrefix(action, "user."), nodeID, userID}, nil
+	case "cert.list":
+		return JSONArgs("cert", "list"), nil
+	case "cert.issue":
+		domain, _ := args["domain"].(string)
+		if !safeDomain.MatchString(domain) {
+			return nil, errors.New("invalid certificate domain")
+		}
+		command := []string{"cert", "issue", domain}
+		if email, _ := args["email"].(string); email != "" {
+			if len(email) > 254 || !strings.Contains(email, "@") || strings.ContainsAny(email, "\r\n\x00") {
+				return nil, errors.New("invalid email")
+			}
+			command = append(command, email)
+		}
+		return command, nil
+	case "cert.renew":
+		return []string{"cert", "renew"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported action: %s", action)
 	}
+}
+
+func requiredID(args map[string]any, key string) (string, error) {
+	value, _ := args[key].(string)
+	if !safeID.MatchString(value) {
+		return "", fmt.Errorf("invalid %s", strings.ReplaceAll(key, "_", " "))
+	}
+	return value, nil
 }
 
 func nodeAddCommand(args map[string]any) ([]string, error) {

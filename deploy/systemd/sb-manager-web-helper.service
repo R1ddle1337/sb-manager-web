@@ -1,0 +1,22 @@
+[Unit]
+Description=sb-manager WebUI privileged helper
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sb-web helper --config /etc/sb-manager-web/config.json
+Restart=on-failure
+RestartSec=3s
+User=root
+Group=sbweb
+UMask=0007
+RuntimeDirectory=sb-manager-web
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/sb-manager /etc/sysctl.d /var/lib/sb-manager /var/log/sb-manager /run/sb-manager /run/sb-manager-web /usr/local/lib/sb-manager /usr/local/bin
+
+[Install]
+WantedBy=multi-user.target

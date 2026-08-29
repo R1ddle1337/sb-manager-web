@@ -1,290 +1,380 @@
 package storage
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/R1ddle1337/sb-manager-web/internal/types"
-	"go.etcd.io/bbolt"
+	_ "modernc.org/sqlite"
 )
 
-var (
-	bucketUsers       = []byte("users")
-	bucketSessions    = []byte("sessions")
-	bucketServers     = []byte("servers")
-	bucketTasks       = []byte("tasks")
-	bucketEnrollments = []byte("enrollments")
-	bucketAudit       = []byte("audit")
-)
+type Store struct{ db *sql.DB }
 
-type Store struct{ db *bbolt.DB }
+const schema = `
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, expires_at TEXT NOT NULL, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS servers (id TEXT PRIMARY KEY, last_seen TEXT NOT NULL, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, server_id TEXT NOT NULL, status TEXT NOT NULL, batch_id TEXT NOT NULL DEFAULT '', idempotency_key TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, data BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_tasks_server_status ON tasks(server_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_batch ON tasks(batch_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key) WHERE idempotency_key <> '';
+CREATE TABLE IF NOT EXISTS enrollments (hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, used INTEGER NOT NULL, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, data BLOB NOT NULL);
+PRAGMA user_version=1;
+`
 
 func Open(path string) (*Store, error) {
-	db, err := bbolt.Open(path, 0600, &bbolt.Options{Timeout: 3 * time.Second})
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
+	if path == "" {
+		return nil, errors.New("database path is empty")
 	}
-	s := &Store{db: db}
-	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, bucket := range [][]byte{bucketUsers, bucketSessions, bucketServers, bucketTasks, bucketEnrollments, bucketAudit} {
-			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		db.Close()
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return nil, err
 	}
-	return s, nil
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite database: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(schema); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize sqlite schema: %w", err)
+	}
+	return &Store{db: db}, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error             { return s.db.Close() }
+func encode(value any) ([]byte, error)    { return json.Marshal(value) }
+func decode(data []byte, value any) error { return json.Unmarshal(data, value) }
+func stamp(value time.Time) string        { return value.UTC().Format(time.RFC3339Nano) }
 
-func putJSON(tx *bbolt.Tx, bucket, key []byte, value any) error {
-	data, err := json.Marshal(value)
+func (s *Store) PutUser(user types.User) error {
+	data, err := encode(user)
 	if err != nil {
 		return err
 	}
-	return tx.Bucket(bucket).Put(key, data)
+	_, err = s.db.Exec(`INSERT INTO users(username,data) VALUES(?,?) ON CONFLICT(username) DO UPDATE SET data=excluded.data`, user.Username, data)
+	return err
 }
-
-func getJSON(tx *bbolt.Tx, bucket, key []byte, value any) error {
-	data := tx.Bucket(bucket).Get(key)
-	if data == nil {
-		return bbolt.ErrBucketNotFound
-	}
-	return json.Unmarshal(append([]byte(nil), data...), value)
-}
-
-func (s *Store) PutUser(user types.User) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketUsers, []byte(user.Username), user) })
-}
-
 func (s *Store) GetUser(username string) (types.User, error) {
-	var user types.User
-	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketUsers, []byte(username), &user) })
-	return user, err
+	var data []byte
+	var value types.User
+	err := s.db.QueryRow(`SELECT data FROM users WHERE username=?`, username).Scan(&data)
+	if err == nil {
+		err = decode(data, &value)
+	}
+	return value, err
 }
-
 func (s *Store) HasUsers() (bool, error) {
-	var found bool
-	err := s.db.View(func(tx *bbolt.Tx) error { found = tx.Bucket(bucketUsers).Stats().KeyN > 0; return nil })
-	return found, err
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	return count > 0, err
 }
 
-func (s *Store) PutSession(session types.Session) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketSessions, []byte(session.ID), session) })
+func (s *Store) PutSession(value types.Session) error {
+	data, err := encode(value)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO sessions(id,expires_at,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET expires_at=excluded.expires_at,data=excluded.data`, value.ID, stamp(value.ExpiresAt), data)
+	return err
 }
-
 func (s *Store) GetSession(id string) (types.Session, error) {
-	var session types.Session
-	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketSessions, []byte(id), &session) })
-	return session, err
+	var data []byte
+	var value types.Session
+	err := s.db.QueryRow(`SELECT data FROM sessions WHERE id=?`, id).Scan(&data)
+	if err == nil {
+		err = decode(data, &value)
+	}
+	return value, err
 }
-
 func (s *Store) DeleteSession(id string) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return tx.Bucket(bucketSessions).Delete([]byte(id)) })
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE id=?`, id)
+	return err
 }
 
-func (s *Store) PutServer(server types.Server) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketServers, []byte(server.ID), server) })
+func (s *Store) PutServer(value types.Server) error {
+	data, err := encode(value)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO servers(id,last_seen,data) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET last_seen=excluded.last_seen,data=excluded.data`, value.ID, stamp(value.LastSeen), data)
+	return err
 }
-
 func (s *Store) GetServer(id string) (types.Server, error) {
-	var server types.Server
-	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketServers, []byte(id), &server) })
-	return server, err
+	var data []byte
+	var value types.Server
+	err := s.db.QueryRow(`SELECT data FROM servers WHERE id=?`, id).Scan(&data)
+	if err == nil {
+		err = decode(data, &value)
+	}
+	return value, err
 }
-
 func (s *Store) ListServers() ([]types.Server, error) {
-	servers := []types.Server{}
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketServers).ForEach(func(_, data []byte) error {
-			var server types.Server
-			if err := json.Unmarshal(data, &server); err != nil {
-				return err
-			}
-			server.AgentPublicKey = ""
-			servers = append(servers, server)
-			return nil
-		})
-	})
-	return servers, err
+	rows, err := s.db.Query(`SELECT data FROM servers ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := []types.Server{}
+	for rows.Next() {
+		var data []byte
+		var value types.Server
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err := decode(data, &value); err != nil {
+			return nil, err
+		}
+		value.AgentPublicKey = ""
+		values = append(values, value)
+	}
+	return values, rows.Err()
 }
-
 func (s *Store) DeleteServer(id string) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return tx.Bucket(bucketServers).Delete([]byte(id)) })
+	_, err := s.db.Exec(`DELETE FROM servers WHERE id=?`, id)
+	return err
 }
 
-func (s *Store) PutTask(task types.Task) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketTasks, []byte(task.ID), task) })
+func taskArgs(task types.Task) (string, string, string, string, string, []byte, error) {
+	data, err := encode(task)
+	return task.ServerID, task.Status, task.BatchID, task.IdempotencyKey, stamp(task.CreatedAt), data, err
 }
-
+func putTask(execer interface {
+	Exec(string, ...any) (sql.Result, error)
+}, task types.Task) error {
+	serverID, status, batchID, idem, created, data, err := taskArgs(task)
+	if err != nil {
+		return err
+	}
+	_, err = execer.Exec(`INSERT INTO tasks(id,server_id,status,batch_id,idempotency_key,created_at,data) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET server_id=excluded.server_id,status=excluded.status,batch_id=excluded.batch_id,idempotency_key=excluded.idempotency_key,created_at=excluded.created_at,data=excluded.data`, task.ID, serverID, status, batchID, idem, created, data)
+	return err
+}
+func (s *Store) PutTask(task types.Task) error { return putTask(s.db, task) }
+func (s *Store) GetTask(id string) (types.Task, error) {
+	var data []byte
+	var value types.Task
+	err := s.db.QueryRow(`SELECT data FROM tasks WHERE id=?`, id).Scan(&data)
+	if err == nil {
+		err = decode(data, &value)
+	}
+	return value, err
+}
 func (s *Store) UpdateTask(id string, update func(*types.Task) error) (types.Task, error) {
-	var result types.Task
-	err := s.db.Update(func(tx *bbolt.Tx) error {
-		if err := getJSON(tx, bucketTasks, []byte(id), &result); err != nil {
-			return err
-		}
-		if err := update(&result); err != nil {
-			return err
-		}
-		return putJSON(tx, bucketTasks, []byte(id), result)
-	})
-	return result, err
-}
-
-func (s *Store) ClaimPendingTask(serverID string) (types.Task, error) {
-	var result types.Task
-	err := s.db.Update(func(tx *bbolt.Tx) error {
-		bucket := tx.Bucket(bucketTasks)
-		return bucket.ForEach(func(key, data []byte) error {
-			if result.ID != "" {
-				return nil
-			}
-			var task types.Task
-			if err := json.Unmarshal(data, &task); err != nil {
-				return err
-			}
-			if task.ServerID != serverID || task.Status != types.TaskPending {
-				return nil
-			}
-			now := time.Now().UTC()
-			task.Status = types.TaskRunning
-			task.StartedAt = &now
-			if err := putJSON(tx, bucketTasks, key, task); err != nil {
-				return err
-			}
-			result = task
-			return nil
-		})
-	})
+	tx, err := s.db.Begin()
 	if err != nil {
 		return types.Task{}, err
 	}
-	if result.ID == "" {
-		return types.Task{}, bbolt.ErrBucketNotFound
+	defer tx.Rollback()
+	var data []byte
+	var value types.Task
+	if err := tx.QueryRow(`SELECT data FROM tasks WHERE id=?`, id).Scan(&data); err != nil {
+		return value, err
 	}
-	return result, nil
+	if err := decode(data, &value); err != nil {
+		return value, err
+	}
+	if err := update(&value); err != nil {
+		return value, err
+	}
+	if err := putTask(tx, value); err != nil {
+		return value, err
+	}
+	return value, tx.Commit()
 }
-
-func (s *Store) GetTask(id string) (types.Task, error) {
-	var task types.Task
-	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketTasks, []byte(id), &task) })
-	return task, err
-}
-
 func (s *Store) ListTasks(limit int) ([]types.Task, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	tasks := []types.Task{}
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketTasks).ForEach(func(_, data []byte) error {
-			if len(tasks) >= limit {
-				return nil
-			}
-			var task types.Task
-			if err := json.Unmarshal(data, &task); err != nil {
-				return err
-			}
-			tasks = append(tasks, task)
-			return nil
-		})
-	})
-	return tasks, err
+	rows, err := s.db.Query(`SELECT data FROM (SELECT data,created_at FROM tasks ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := []types.Task{}
+	for rows.Next() {
+		var data []byte
+		var value types.Task
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err := decode(data, &value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
 }
-
 func (s *Store) FindTaskByIdempotency(key string) (types.Task, error) {
 	if key == "" {
-		return types.Task{}, bbolt.ErrBucketNotFound
+		return types.Task{}, sql.ErrNoRows
 	}
-	var found types.Task
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketTasks).ForEach(func(_, data []byte) error {
-			var task types.Task
-			if err := json.Unmarshal(data, &task); err != nil {
-				return err
-			}
-			if task.IdempotencyKey == key {
-				found = task
-			}
-			return nil
-		})
-	})
+	var data []byte
+	var value types.Task
+	err := s.db.QueryRow(`SELECT data FROM tasks WHERE idempotency_key=?`, key).Scan(&data)
+	if err == nil {
+		err = decode(data, &value)
+	}
+	return value, err
+}
+func (s *Store) BatchShouldStop(batchID string, threshold int) (bool, error) {
+	if batchID == "" || threshold <= 0 || threshold > 100 {
+		return false, nil
+	}
+	var completed, failed int
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status IN ('success','failed') THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) FROM tasks WHERE batch_id=?`, batchID).Scan(&completed, &failed)
+	return completed > 0 && failed*100/completed >= threshold, err
+}
+func (s *Store) ClaimPendingTask(serverID string, failureStopPercent int) (types.Task, error) {
+	tx, err := s.db.Begin()
 	if err != nil {
 		return types.Task{}, err
 	}
-	if found.ID == "" {
-		return types.Task{}, bbolt.ErrBucketNotFound
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT data FROM tasks WHERE server_id=? AND status=? ORDER BY created_at`, serverID, types.TaskPending)
+	if err != nil {
+		return types.Task{}, err
 	}
-	return found, nil
+	candidates := []types.Task{}
+	for rows.Next() {
+		var data []byte
+		var task types.Task
+		if err := rows.Scan(&data); err != nil {
+			rows.Close()
+			return types.Task{}, err
+		}
+		if err := decode(data, &task); err != nil {
+			rows.Close()
+			return types.Task{}, err
+		}
+		candidates = append(candidates, task)
+	}
+	rows.Close()
+	for _, task := range candidates {
+		var completed, failed int
+		if task.BatchID != "" && failureStopPercent > 0 {
+			if err := tx.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status IN ('success','failed') THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) FROM tasks WHERE batch_id=?`, task.BatchID).Scan(&completed, &failed); err != nil {
+				return types.Task{}, err
+			}
+			if completed > 0 && failed*100/completed >= failureStopPercent {
+				now := time.Now().UTC()
+				task.Status, task.Error, task.FinishedAt = types.TaskFailed, "batch stopped after reaching failure threshold", &now
+				if err := putTask(tx, task); err != nil {
+					return types.Task{}, err
+				}
+				continue
+			}
+		}
+		now := time.Now().UTC()
+		task.Status, task.StartedAt = types.TaskRunning, &now
+		if err := putTask(tx, task); err != nil {
+			return types.Task{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return types.Task{}, err
+		}
+		return task, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return types.Task{}, err
+	}
+	return types.Task{}, sql.ErrNoRows
 }
 
 func (s *Store) PutEnrollment(key string, token types.EnrollmentToken) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketEnrollments, []byte(key), token) })
+	data, err := encode(token)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO enrollments(hash,expires_at,used,data) VALUES(?,?,?,?) ON CONFLICT(hash) DO UPDATE SET expires_at=excluded.expires_at,used=excluded.used,data=excluded.data`, key, stamp(token.ExpiresAt), token.Used, data)
+	return err
 }
-
 func (s *Store) GetEnrollment(key string) (types.EnrollmentToken, error) {
-	var token types.EnrollmentToken
-	err := s.db.View(func(tx *bbolt.Tx) error { return getJSON(tx, bucketEnrollments, []byte(key), &token) })
-	return token, err
+	var data []byte
+	var value types.EnrollmentToken
+	err := s.db.QueryRow(`SELECT data FROM enrollments WHERE hash=?`, key).Scan(&data)
+	if err == nil {
+		err = decode(data, &value)
+	}
+	return value, err
 }
-
 func (s *Store) MarkEnrollmentUsed(key string) error {
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		var token types.EnrollmentToken
-		if err := getJSON(tx, bucketEnrollments, []byte(key), &token); err != nil {
-			return err
-		}
-		token.Used = true
-		return putJSON(tx, bucketEnrollments, []byte(key), token)
-	})
+	token, err := s.GetEnrollment(key)
+	if err != nil {
+		return err
+	}
+	token.Used = true
+	return s.PutEnrollment(key, token)
 }
-
 func (s *Store) ConsumeEnrollment(key string, server types.Server) error {
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		var token types.EnrollmentToken
-		if err := getJSON(tx, bucketEnrollments, []byte(key), &token); err != nil {
-			return err
-		}
-		if token.Used || token.ExpiresAt.Before(time.Now().UTC()) {
-			return errors.New("enrollment token is used or expired")
-		}
-		token.Used = true
-		if err := putJSON(tx, bucketEnrollments, []byte(key), token); err != nil {
-			return err
-		}
-		return putJSON(tx, bucketServers, []byte(server.ID), server)
-	})
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var data []byte
+	var token types.EnrollmentToken
+	if err := tx.QueryRow(`SELECT data FROM enrollments WHERE hash=?`, key).Scan(&data); err != nil {
+		return err
+	}
+	if err := decode(data, &token); err != nil {
+		return err
+	}
+	if token.Used || token.ExpiresAt.Before(time.Now().UTC()) {
+		return errors.New("enrollment token is used or expired")
+	}
+	token.Used = true
+	tokenData, err := encode(token)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE enrollments SET used=1,data=? WHERE hash=? AND used=0`, tokenData, key); err != nil {
+		return err
+	}
+	serverData, err := encode(server)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO servers(id,last_seen,data) VALUES(?,?,?)`, server.ID, stamp(server.LastSeen), serverData); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
-
-func (s *Store) PutAudit(event types.AuditEvent) error {
-	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketAudit, []byte(event.ID), event) })
+func (s *Store) PutAudit(value types.AuditEvent) error {
+	data, err := encode(value)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO audit(id,created_at,data) VALUES(?,?,?)`, value.ID, stamp(value.CreatedAt), data)
+	return err
 }
-
 func (s *Store) ListAudit(limit int) ([]types.AuditEvent, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
-	events := []types.AuditEvent{}
-	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketAudit).ForEach(func(_, data []byte) error {
-			if len(events) >= limit {
-				return nil
-			}
-			var event types.AuditEvent
-			if err := json.Unmarshal(data, &event); err != nil {
-				return err
-			}
-			events = append(events, event)
-			return nil
-		})
-	})
-	return events, err
+	rows, err := s.db.Query(`SELECT data FROM (SELECT data,created_at FROM audit ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := []types.AuditEvent{}
+	for rows.Next() {
+		var data []byte
+		var value types.AuditEvent
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err := decode(data, &value); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
 }
-
-func IsNotFound(err error) bool { return errors.Is(err, bbolt.ErrBucketNotFound) }
+func IsNotFound(err error) bool { return errors.Is(err, sql.ErrNoRows) }

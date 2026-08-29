@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -56,7 +57,7 @@ func VerifyPassword(encoded, password string) bool {
 		return false
 	}
 	actual := argon2.IDKey([]byte(password), salt, 1, 64*1024, 2, uint32(len(expected)))
-	return string(actual) == string(expected)
+	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
 
 func (m *Manager) EnsureAdmin() (string, bool, error) {

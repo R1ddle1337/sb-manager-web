@@ -30,6 +30,10 @@
     <section class="card">
       <div class="section-title"><h2>服务器</h2><button id="add-server" class="secondary">生成加入命令</button></div>
       <div id="servers" class="table-wrap">读取中…</div>
+      <form id="batch-form" class="inline-form">
+        <select name="action"><option value="bbr.enable">批量开启 BBR</option><option value="hy2-buffer.enable">批量开启 HY2 UDP</option><option value="core.update">批量更新核心</option><option value="backup.create">批量备份</option><option value="health.check">批量健康检查</option></select>
+        <button type="submit">对选中服务器执行</button>
+      </form>
       <pre id="join-command" class="output" hidden></pre>
     </section>
     <section class="card">
@@ -56,6 +60,21 @@
         <button type="submit">添加节点</button>
       </form>
       <div id="nodes" class="table-wrap">读取中…</div>
+      <pre id="share-output" class="output" hidden></pre>
+      <form id="add-user-form" class="inline-form">
+        <input name="node_id" placeholder="节点 ID" required>
+        <input name="user_id" placeholder="用户 ID" required>
+        <input name="name" placeholder="用户名称">
+        <button type="submit" class="secondary">添加用户</button>
+      </form>
+    </section>
+    <section class="card">
+      <div class="section-title"><h2>证书</h2><a href="/api/v1/certificates" target="_blank">查看证书 JSON</a></div>
+      <form id="cert-form" class="inline-form">
+        <input name="domain" placeholder="example.com" required>
+        <input name="email" type="email" placeholder="ACME 邮箱（可选）">
+        <button type="submit">申请/续签证书</button>
+      </form>
     </section>
     <section class="card">
       <div class="section-title"><h2>最近任务</h2><a href="/api/v1/tasks" target="_blank">打开 JSON</a></div>

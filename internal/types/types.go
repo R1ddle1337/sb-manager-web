@@ -41,6 +41,7 @@ type Task struct {
 	StartedAt      *time.Time     `json:"started_at,omitempty"`
 	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
 	IdempotencyKey string         `json:"idempotency_key,omitempty"`
+	BatchID        string         `json:"batch_id,omitempty"`
 }
 
 type EnrollmentToken struct {

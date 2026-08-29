@@ -57,9 +57,14 @@ Supported system actions include status/capabilities reads plus:
 ```text
 POST  /api/v1/servers/{server_id}/nodes
 PATCH /api/v1/servers/{server_id}/nodes/{node_id}
+GET   /api/v1/servers/{server_id}/nodes/{node_id}
 POST  /api/v1/servers/{server_id}/nodes/{node_id}/enable
 POST  /api/v1/servers/{server_id}/nodes/{node_id}/disable
 POST  /api/v1/servers/{server_id}/nodes/{node_id}/delete
+GET   /api/v1/servers/{server_id}/nodes/{node_id}/share
+GET   /api/v1/servers/{server_id}/nodes/{node_id}/users
+POST  /api/v1/servers/{server_id}/nodes/{node_id}/users
+POST  /api/v1/servers/{server_id}/nodes/{node_id}/users/{user_id}/{enable|disable|delete|rotate}
 ```
 
 Node fields are allow-listed by the runner. Unknown JSON fields are rejected and no request is passed to a shell.

@@ -21,13 +21,18 @@ SBM_WEB_VAR="$ROOT/var/lib/sb-manager-web" \
 SBM_WEB_LOG="$ROOT/var/log/sb-manager-web" \
 SBM_WEB_SYSTEMD_DIR="$ROOT/etc/systemd/system" \
 SBM_WEB_OPENRC_DIR="$ROOT/etc/init.d" \
+SBM_WEB_SERVICE_USER=daemon \
 bash "$PROJECT/install.sh" --no-start
 test -x "$ROOT/usr/local/bin/sb-web"
 test -f "$ROOT/etc/sb-manager-web/config.json"
 test -f "$ROOT/var/lib/sb-manager-web/web.db"
 test -f "$ROOT/etc/systemd/system/sb-manager-web.service"
+test -f "$ROOT/etc/systemd/system/sb-manager-web-helper.service"
 test -x "$ROOT/etc/init.d/sb-manager-web"
+test -x "$ROOT/etc/init.d/sb-manager-web-helper"
 grep -Fq "$ROOT/usr/local/bin/sb-web" "$ROOT/etc/systemd/system/sb-manager-web.service"
 jq -e --arg dir "$ROOT/var/lib/sb-manager-web" '.data_dir==$dir and .database==($dir+"/web.db")' "$ROOT/etc/sb-manager-web/config.json" >/dev/null
+[[ $(stat -c '%U' "$ROOT/var/lib/sb-manager-web") == daemon ]]
+grep -Fq 'User=daemon' "$ROOT/etc/systemd/system/sb-manager-web.service"
 "$ROOT/usr/local/bin/sb-web" version | grep -Fq 'sb-manager-web'
 printf 'INSTALL SMOKE PASSED\n'
