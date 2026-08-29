@@ -34,6 +34,11 @@ GET /api/v1/settings
 GET /api/v1/config/validate
 GET /api/v1/config/diff
 GET /api/v1/logs?target=all&lines=200
+GET /api/v1/shares
+GET /api/v1/subscriptions
+GET /api/v1/subscriptions/status
+POST /api/v1/subscriptions
+DELETE /api/v1/subscriptions
 ```
 
 ## Servers

@@ -22,6 +22,7 @@
 - 服务器/节点详情页，以及 admin/operator/viewer 角色接口
 - SQLite 在线备份、数据库健康检查和主动/被动控制端部署路径
 - 任务筛选/详情抽屉、灰度进度统计、浅色主题和自动刷新
+- 运维中心：健康/配置校验、日志、流量策略、防火墙、服务重启、分享和订阅
 - systemd/OpenRC 服务文件
 - root helper Unix Socket 权限隔离（Web 服务使用 `sbweb` 用户）
 - amd64/arm64/armv7 交叉编译

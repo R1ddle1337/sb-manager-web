@@ -28,7 +28,7 @@
     $('nodes-json').href = `/api/v1/servers/${server}/nodes`;
   }
   async function loadNode() {
-    const node = await json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}`);
+    const [node, users] = await Promise.all([json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}`), json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}/users`).catch(() => ({ users: [] }))]);
     const value = node.node || node;
     $('node-title').textContent = value.name || value.id || nodeID;
     for (const field of ['name', 'port', 'domain']) if ($(field)) $(field).value = value[field] ?? '';
@@ -70,6 +70,22 @@
     $('node-output').textContent = JSON.stringify(value, null, 2);
     $('server-link').href = `/servers/${server}`;
     $('share-link').href = `/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}/share`;
+    renderUsers(users.users || users);
+  }
+  function renderUsers(users) {
+    if (!Array.isArray(users)) return;
+    let panel = $('node-users');
+    if (!panel) {
+      panel = document.createElement('section');
+      panel.id = 'node-users';
+      panel.className = 'panel';
+      document.querySelector('.detail-shell').appendChild(panel);
+    }
+    panel.innerHTML = `<div class="panel-header"><div><p class="eyebrow">ACCESS</p><h2>节点用户</h2></div><span class="muted">凭据仅在目标服务器生成</span></div>${users.length ? `<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>状态</th><th>操作</th></tr></thead><tbody>${users.map((user) => `<tr><td><code>${escapeHTML(user.id)}</code></td><td>${escapeHTML(user.name)}</td><td>${user.enabled ? '<span class="ok">启用</span>' : '<span class="bad">停用</span>'}</td><td><button class="user-action" data-user-id="${escapeHTML(user.id)}" data-user-operation="${user.enabled ? 'disable' : 'enable'}">${user.enabled ? '停用' : '启用'}</button><button class="user-action" data-user-id="${escapeHTML(user.id)}" data-user-operation="rotate">轮换</button></td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">暂无用户快照。</p>'}`;
+    panel.querySelectorAll('.user-action').forEach((button) => button.addEventListener('click', async () => {
+      if (button.dataset.userOperation === 'rotate' && !window.confirm('确认轮换该用户凭据？旧分享链接会立即失效。')) return;
+      try { await json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}/users/${encodeURIComponent(button.dataset.userId)}/${button.dataset.userOperation}`, { method: 'POST', headers: { 'X-CSRF-Token': csrf() }, body: '{}' }); show(`用户任务已创建。`, true); setTimeout(loadNode, 800); } catch (error) { show(error.message); }
+    }));
   }
   function eventField(name) { return document.querySelector(`#node-edit-form [name="${name}"]`); }
   function configureProtocolFields(protocol) {

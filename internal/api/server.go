@@ -379,6 +379,12 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.singleJSONAction(w, r, "cert.list")
 	case "/api/v1/logs":
 		s.logs(w, r)
+	case "/api/v1/shares":
+		s.shares(w, r)
+	case "/api/v1/subscriptions":
+		s.subscriptions(w, r)
+	case "/api/v1/subscriptions/status":
+		s.subscriptionStatus(w, r)
 	case "/api/v1/servers":
 		s.servers(w, r)
 	case "/api/v1/enrollment":
@@ -486,6 +492,80 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"target": args["target"], "output": truncate(redact(result.Stdout), 65536)})
+}
+
+func (s *Server) shares(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	result, err := s.runLocal("share.all", nil)
+	if err != nil {
+		writeRunnerError(w, err, result)
+		return
+	}
+	// Share URIs are credentials. This endpoint is deliberately synchronous and
+	// never creates a persisted task or audit payload; the browser must opt in
+	// to display the one-time response.
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
+}
+
+func (s *Server) subscriptionStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	result, err := s.runLocal("subscription.status", nil)
+	if err != nil {
+		writeRunnerError(w, err, result)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
+}
+
+func (s *Server) subscriptions(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		result, err := s.runLocal("subscription.list", nil)
+		if err != nil {
+			writeRunnerError(w, err, result)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
+		return
+	}
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET、POST、DELETE", nil)
+		return
+	}
+	var request struct {
+		Duration string `json:"duration"`
+		Mode     string `json:"mode"`
+		Token    string `json:"token"`
+	}
+	if r.Method == http.MethodPost {
+		if err := decodeBody(r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		result, err := s.runLocal("subscription.create", map[string]any{"duration": request.Duration, "mode": request.Mode})
+		if err != nil {
+			writeRunnerError(w, err, result)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"output": redact(result.Stdout)})
+		return
+	}
+	if err := decodeBody(r, &request); err != nil || request.Token == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "token 必填", nil)
+		return
+	}
+	result, err := s.runLocal("subscription.revoke", map[string]any{"token": request.Token})
+	if err != nil {
+		writeRunnerError(w, err, result)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
 }
 
 func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
@@ -884,6 +964,9 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 			args = map[string]any{"id": parts[5], "user_id": user}
 		} else {
 			args = map[string]any{"id": parts[5]}
+		}
+		if r.URL.Query().Get("qr") == "1" {
+			args["qr"] = true
 		}
 		result, err := s.runLocal("node.share", args)
 		if err != nil {
