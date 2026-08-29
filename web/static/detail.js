@@ -9,7 +9,9 @@
     return data;
   };
   const show = (message, success = false) => { $('alerts').innerHTML = `<div class="notice ${success ? 'success' : 'error'}">${escapeHTML(message)}</div>`; };
-  const server = encodeURIComponent(window.SB_SERVER_ID);
+  const serverID = document.body.dataset.serverId || '';
+  const nodeID = document.body.dataset.nodeId || '';
+  const server = encodeURIComponent(serverID);
   async function loadServer() {
     const [info, status, nodes, caps] = await Promise.all([json(`/api/v1/servers/${server}`), json(`/api/v1/servers/${server}/status`), json(`/api/v1/servers/${server}/nodes`), json(`/api/v1/servers/${server}/capabilities`)]);
     $('server-name').textContent = info.name || info.id;
@@ -26,9 +28,9 @@
     $('nodes-json').href = `/api/v1/servers/${server}/nodes`;
   }
   async function loadNode() {
-    const node = await json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(window.SB_NODE_ID)}`);
+    const node = await json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}`);
     const value = node.node || node;
-    $('node-title').textContent = value.name || value.id || window.SB_NODE_ID;
+    $('node-title').textContent = value.name || value.id || nodeID;
     for (const field of ['name', 'port', 'domain']) if ($(field)) $(field).value = value[field] ?? '';
     if ($('address')) $('address').value = value.address ?? value.server_address ?? value.client_address ?? '';
     const metadata = value.metadata || {};
@@ -67,7 +69,7 @@
     configureProtocolFields(value.protocol);
     $('node-output').textContent = JSON.stringify(value, null, 2);
     $('server-link').href = `/servers/${server}`;
-    $('share-link').href = `/api/v1/servers/${server}/nodes/${encodeURIComponent(window.SB_NODE_ID)}/share`;
+    $('share-link').href = `/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}/share`;
   }
   function eventField(name) { return document.querySelector(`#node-edit-form [name="${name}"]`); }
   function configureProtocolFields(protocol) {
@@ -101,10 +103,10 @@
     const button = event.target.querySelector('button[type="submit"]');
     button.disabled = true;
     try {
-      const task = await json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(window.SB_NODE_ID)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf(), 'Idempotency-Key': `node-set-${window.SB_SERVER_ID}-${window.SB_NODE_ID}-${Date.now()}` }, body: JSON.stringify(args) });
+      const task = await json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf(), 'Idempotency-Key': `node-set-${serverID}-${nodeID}-${Date.now()}` }, body: JSON.stringify(args) });
       show(`节点保存任务已创建：${task.id}`, true);
       setTimeout(loadNode, 900);
     } catch (error) { show(error.message); } finally { button.disabled = false; }
   });
-  if (window.SB_NODE_ID) loadNode().catch((error) => show(error.message)); else loadServer().catch((error) => show(error.message));
+  if (nodeID) loadNode().catch((error) => show(error.message)); else loadServer().catch((error) => show(error.message));
 })();
