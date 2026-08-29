@@ -58,7 +58,7 @@ curl -fsSL https://github.com/R1ddle1337/sb-manager-web/raw/main/install.sh | su
 sb-web enable
 ```
 
-安装器会校验发布包 SHA256，并根据 systemd/OpenRC 安装服务。当前预览版本为 `0.1.0-alpha.4`，开发时可以使用：
+安装器会校验发布包 SHA256，并根据 systemd/OpenRC 安装服务。当前预览版本为 `0.1.0-alpha.5`，开发时可以使用：
 
 ```bash
 SBM_WEB_BINARY_URL=/path/to/sb-web SBM_WEB_SKIP_VERIFY=1 sudo -E bash install.sh --no-start
