@@ -8,6 +8,8 @@ BIN_DIR=${SBM_WEB_BIN:-$PREFIX/bin}
 ETC_DIR=${SBM_WEB_ETC:-/etc/sb-manager-web}
 VAR_DIR=${SBM_WEB_VAR:-/var/lib/sb-manager-web}
 LOG_DIR=${SBM_WEB_LOG:-/var/log/sb-manager-web}
+SYSTEMD_DIR=${SBM_WEB_SYSTEMD_DIR:-/etc/systemd/system}
+OPENRC_DIR=${SBM_WEB_OPENRC_DIR:-/etc/init.d}
 VERSION=${SBM_WEB_VERSION:-latest}
 REPO=${SBM_WEB_REPO:-R1ddle1337/sb-manager-web}
 NO_START=0
@@ -77,10 +79,22 @@ mkdir -p "$LIB_DIR" "$BIN_DIR" "$ETC_DIR" "$VAR_DIR" "$LOG_DIR"
 install -m 0755 "$tmp/sb-web" "$LIB_DIR/sb-web"
 ln -sfn "$LIB_DIR/sb-web" "$BIN_DIR/sb-web"
 if [[ ! -e "$ETC_DIR/config.json" ]]; then
+  install -m 0600 /dev/stdin "$ETC_DIR/config.json" <<EOF_CONFIG
+{
+  "listen": "127.0.0.1:9091",
+  "sb_path": "$(command -v sb)",
+  "data_dir": "$VAR_DIR",
+  "database": "$VAR_DIR/web.db",
+  "log_dir": "$LOG_DIR",
+  "tls": {"enabled": false, "cert_file": "", "key_file": ""},
+  "agent": {"enabled": false, "controller_url": "", "identity_file": "$VAR_DIR/agent-identity/ed25519.json", "heartbeat_interval": "30s"},
+  "tasks": {"default_timeout": "10m", "batch_concurrency": 1, "failure_stop_percent": 25}
+}
+EOF_CONFIG
   "$BIN_DIR/sb-web" init --config "$ETC_DIR/config.json"
 fi
-if [[ -d /etc/systemd/system ]]; then
-  install -m 0644 /dev/stdin /etc/systemd/system/sb-manager-web.service <<'EOF_SYSTEMD'
+if [[ -d "$SYSTEMD_DIR" ]]; then
+  install -m 0644 /dev/stdin "$SYSTEMD_DIR/sb-manager-web.service" <<EOF_SYSTEMD
 [Unit]
 Description=sb-manager Go WebUI
 After=network-online.target
@@ -88,7 +102,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/sb-web server --config /etc/sb-manager-web/config.json
+ExecStart=$BIN_DIR/sb-web server --config $ETC_DIR/config.json
 Restart=on-failure
 RestartSec=3s
 User=root
@@ -96,29 +110,66 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/etc/sb-manager-web /etc/sb-manager /etc/sysctl.d /var/lib/sb-manager-web /var/lib/sb-manager /var/log/sb-manager-web /var/log/sb-manager /run/sb-manager-web /run/sb-manager /usr/local/lib/sb-manager /usr/local/bin
+ReadWritePaths=$ETC_DIR /etc/sb-manager /etc/sysctl.d $VAR_DIR /var/lib/sb-manager $LOG_DIR /var/log/sb-manager /run/sb-manager-web /run/sb-manager $LIB_DIR /usr/local/lib/sb-manager $BIN_DIR /usr/local/bin
 
 [Install]
 WantedBy=multi-user.target
 EOF_SYSTEMD
+  install -m 0644 /dev/stdin "$SYSTEMD_DIR/sb-manager-web-agent.service" <<EOF_AGENT_SYSTEMD
+[Unit]
+Description=sb-manager WebUI remote Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$BIN_DIR/sb-web agent --config $ETC_DIR/config.json
+Restart=always
+RestartSec=5s
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=$ETC_DIR /etc/sb-manager /etc/sysctl.d $VAR_DIR /var/lib/sb-manager $LOG_DIR /var/log/sb-manager /run/sb-manager-web /run/sb-manager $LIB_DIR /usr/local/lib/sb-manager $BIN_DIR /usr/local/bin
+
+[Install]
+WantedBy=multi-user.target
+EOF_AGENT_SYSTEMD
 fi
-if [[ -d /etc/init.d ]]; then
-  install -m 0755 /dev/stdin /etc/init.d/sb-manager-web <<'EOF_OPENRC'
+if [[ -d "$OPENRC_DIR" ]]; then
+  install -m 0755 /dev/stdin "$OPENRC_DIR/sb-manager-web" <<EOF_OPENRC
 #!/sbin/openrc-run
 name="sb-manager-web"
 description="sb-manager Go WebUI"
-command="/usr/local/bin/sb-web"
-command_args="server --config /etc/sb-manager-web/config.json"
+command="$BIN_DIR/sb-web"
+command_args="server --config $ETC_DIR/config.json"
 command_user="root:root"
 supervisor="supervise-daemon"
 supervise_daemon_args="--stdout /var/log/sb-manager-web/server.log --stderr /var/log/sb-manager-web/server.err.log"
 output_log="/var/log/sb-manager-web/server.log"
 error_log="/var/log/sb-manager-web/server.err.log"
-pidfile="/run/${RC_SVCNAME}.pid"
+pidfile="/run/\${RC_SVCNAME}.pid"
 command_background="yes"
 respawn_delay=3
 depend() { need net; after firewall; }
 EOF_OPENRC
+  install -m 0755 /dev/stdin "$OPENRC_DIR/sb-manager-web-agent" <<EOF_AGENT_OPENRC
+#!/sbin/openrc-run
+name="sb-manager-web-agent"
+description="sb-manager WebUI remote Agent"
+command="$BIN_DIR/sb-web"
+command_args="agent --config $ETC_DIR/config.json"
+command_user="root:root"
+supervisor="supervise-daemon"
+supervise_daemon_args="--stdout /var/log/sb-manager-web/agent.log --stderr /var/log/sb-manager-web/agent.err.log"
+output_log="/var/log/sb-manager-web/agent.log"
+error_log="/var/log/sb-manager-web/agent.err.log"
+pidfile="/run/\${RC_SVCNAME}.pid"
+command_background="yes"
+respawn_delay=5
+depend() { need net; }
+EOF_AGENT_OPENRC
 fi
 if [[ "$NO_START" == 0 ]]; then
   if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then

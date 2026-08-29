@@ -24,6 +24,8 @@ type Runner struct {
 }
 
 var safeVersion = regexp.MustCompile(`^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`)
+var safeID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,47}$`)
+var safeProtocol = regexp.MustCompile(`^(vmess|ss|anytls|hy2|trojan|tuic|vless|naive|shadowtls|snell)$`)
 
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	if r.Path == "" {
@@ -98,9 +100,81 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"core", "rollback"}, nil
 	case "doctor":
 		return JSONArgs("doctor"), nil
+	case "doctor.repair-safe":
+		return []string{"doctor", "--repair-safe"}, nil
+	case "backup.create":
+		return []string{"backup"}, nil
+	case "health.check":
+		return JSONArgs("health", "check"), nil
+	case "logs":
+		return []string{"logs", "all", "100"}, nil
+	case "node.enable", "node.disable", "node.delete":
+		id, ok := args["id"].(string)
+		if !ok || !safeID.MatchString(id) {
+			return nil, errors.New("invalid node id")
+		}
+		verb := strings.TrimPrefix(action, "node.")
+		return []string{"node", verb, id}, nil
+	case "node.add":
+		return nodeAddCommand(args)
+	case "node.set":
+		return nodeSetCommand(args)
 	default:
 		return nil, fmt.Errorf("unsupported action: %s", action)
 	}
+}
+
+func nodeAddCommand(args map[string]any) ([]string, error) {
+	protocol, _ := args["protocol"].(string)
+	id, _ := args["id"].(string)
+	if !safeProtocol.MatchString(protocol) || !safeID.MatchString(id) {
+		return nil, errors.New("invalid node protocol or id")
+	}
+	command := []string{"node", "add", protocol, "--id", id}
+	for _, field := range []struct{ key, flag string }{{"name", "--name"}, {"domain", "--domain"}, {"address", "--address"}, {"path", "--path"}, {"method", "--method"}, {"snell_version", "--snell-version"}, {"snell_mode", "--snell-mode"}, {"obfs", "--obfs"}, {"masquerade", "--masquerade"}} {
+		if value, ok := args[field.key].(string); ok && value != "" {
+			if len(value) > 253 || strings.ContainsAny(value, "\r\n\x00") {
+				return nil, errors.New("invalid node value")
+			}
+			command = append(command, field.flag, value)
+		}
+	}
+	if port, ok := args["port"].(float64); ok {
+		if port < 1 || port > 65535 || port != float64(int(port)) {
+			return nil, errors.New("invalid node port")
+		}
+		command = append(command, "--port", fmt.Sprintf("%d", int(port)))
+	}
+	if disabled, ok := args["disabled"].(bool); ok && disabled {
+		command = append(command, "--disabled")
+	}
+	return command, nil
+}
+
+func nodeSetCommand(args map[string]any) ([]string, error) {
+	id, _ := args["id"].(string)
+	if !safeID.MatchString(id) {
+		return nil, errors.New("invalid node id")
+	}
+	command := []string{"node", "set", id}
+	for _, field := range []struct{ key, flag string }{{"name", "--name"}, {"address", "--address"}, {"domain", "--domain"}, {"path", "--path"}, {"remark", "--remark"}, {"region", "--region"}, {"purpose", "--purpose"}, {"line", "--line"}, {"tags", "--tags"}} {
+		if value, ok := args[field.key].(string); ok {
+			if len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") {
+				return nil, errors.New("invalid node value")
+			}
+			command = append(command, field.flag, value)
+		}
+	}
+	if port, ok := args["port"].(float64); ok {
+		if port < 1 || port > 65535 || port != float64(int(port)) {
+			return nil, errors.New("invalid node port")
+		}
+		command = append(command, "--port", fmt.Sprintf("%d", int(port)))
+	}
+	if len(command) == 3 {
+		return nil, errors.New("node.set requires at least one field")
+	}
+	return command, nil
 }
 
 func ResultJSON(result Result) json.RawMessage {

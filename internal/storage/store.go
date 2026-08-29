@@ -16,6 +16,7 @@ var (
 	bucketServers     = []byte("servers")
 	bucketTasks       = []byte("tasks")
 	bucketEnrollments = []byte("enrollments")
+	bucketAudit       = []byte("audit")
 )
 
 type Store struct{ db *bbolt.DB }
@@ -27,7 +28,7 @@ func Open(path string) (*Store, error) {
 	}
 	s := &Store{db: db}
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		for _, bucket := range [][]byte{bucketUsers, bucketSessions, bucketServers, bucketTasks, bucketEnrollments} {
+		for _, bucket := range [][]byte{bucketUsers, bucketSessions, bucketServers, bucketTasks, bucketEnrollments, bucketAudit} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return err
 			}
@@ -242,6 +243,48 @@ func (s *Store) MarkEnrollmentUsed(key string) error {
 		token.Used = true
 		return putJSON(tx, bucketEnrollments, []byte(key), token)
 	})
+}
+
+func (s *Store) ConsumeEnrollment(key string, server types.Server) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		var token types.EnrollmentToken
+		if err := getJSON(tx, bucketEnrollments, []byte(key), &token); err != nil {
+			return err
+		}
+		if token.Used || token.ExpiresAt.Before(time.Now().UTC()) {
+			return errors.New("enrollment token is used or expired")
+		}
+		token.Used = true
+		if err := putJSON(tx, bucketEnrollments, []byte(key), token); err != nil {
+			return err
+		}
+		return putJSON(tx, bucketServers, []byte(server.ID), server)
+	})
+}
+
+func (s *Store) PutAudit(event types.AuditEvent) error {
+	return s.db.Update(func(tx *bbolt.Tx) error { return putJSON(tx, bucketAudit, []byte(event.ID), event) })
+}
+
+func (s *Store) ListAudit(limit int) ([]types.AuditEvent, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	events := []types.AuditEvent{}
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(bucketAudit).ForEach(func(_, data []byte) error {
+			if len(events) >= limit {
+				return nil
+			}
+			var event types.AuditEvent
+			if err := json.Unmarshal(data, &event); err != nil {
+				return err
+			}
+			events = append(events, event)
+			return nil
+		})
+	})
+	return events, err
 }
 
 func IsNotFound(err error) bool { return errors.Is(err, bbolt.ErrBucketNotFound) }

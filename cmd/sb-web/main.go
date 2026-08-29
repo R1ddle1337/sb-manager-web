@@ -21,6 +21,7 @@ import (
 )
 
 const defaultConfigPath = "/etc/sb-manager-web/config.json"
+
 var version = "dev"
 
 func main() {
@@ -158,28 +159,31 @@ func initialize(args []string) error {
 }
 
 func serviceAction(action string) error {
+	return serviceActionFor(action, "sb-manager-web.service", "sb-manager-web")
+}
+
+func serviceActionFor(action, systemdUnit, openRCService string) error {
 	if _, err := os.Stat("/run/systemd/system"); err == nil {
 		cmd := "systemctl"
-		args := []string{action, "sb-manager-web.service"}
+		args := []string{action, systemdUnit}
 		if action == "start" {
-			args = []string{"enable", "--now", "sb-manager-web.service"}
+			args = []string{"enable", "--now", systemdUnit}
 		}
 		if action == "disable" {
-			args = []string{"disable", "--now", "sb-manager-web.service"}
+			args = []string{"disable", "--now", systemdUnit}
 		}
 		if action == "restart" {
-			args = []string{"restart", "sb-manager-web.service"}
+			args = []string{"restart", systemdUnit}
 		}
 		if action == "logs" {
-			cmd, args = "journalctl", []string{"-u", "sb-manager-web.service", "-n", "100", "--no-pager"}
+			cmd, args = "journalctl", []string{"-u", systemdUnit, "-n", "100", "--no-pager"}
 		}
 		return runExternal(cmd, args...)
 	}
-	service := "sb-manager-web"
 	if action == "logs" {
 		return runExternal("tail", "-n", "100", "/var/log/sb-manager-web/server.log")
 	}
-	return runExternal("rc-service", service, action)
+	return runExternal("rc-service", openRCService, action)
 }
 
 func runExternal(command string, args ...string) error {
@@ -244,7 +248,23 @@ func join(args []string) error {
 		return err
 	}
 	fmt.Printf("已保存 Agent 配置：%s\n", configPath)
-	return runAgent([]string{"--config", configPath})
+	a, err := agent.New(cfg)
+	if err != nil {
+		return err
+	}
+	if err := a.Register(context.Background()); err != nil {
+		return err
+	}
+	cfg.Agent.EnrollmentToken = ""
+	if err := config.Save(configPath, cfg); err != nil {
+		return err
+	}
+	if err := serviceActionFor("start", "sb-manager-web-agent.service", "sb-manager-web-agent"); err != nil {
+		fmt.Println("Agent 已注册，但未能自动启动服务；请手动运行 sb-web agent 或检查 init 系统。")
+		return err
+	}
+	fmt.Println("Agent 已注册并启动。")
+	return nil
 }
 
 func status(args []string) error {

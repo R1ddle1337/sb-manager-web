@@ -103,10 +103,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		return errors.New("agent controller_url is empty")
 	}
 	if a.server == "" {
-		if a.cfg.Agent.EnrollmentToken == "" {
-			return errors.New("agent enrollment_token is empty")
-		}
-		if err := a.register(ctx); err != nil {
+		if err := a.Register(ctx); err != nil {
 			return err
 		}
 	}
@@ -134,6 +131,29 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// Sync sends one heartbeat and handles at most one queued task.
+func (a *Agent) Sync(ctx context.Context) error {
+	if err := a.Register(ctx); err != nil {
+		return err
+	}
+	if err := a.heartbeat(ctx); err != nil {
+		return err
+	}
+	return a.poll(ctx)
+}
+
+// Register performs one-time enrollment. The join command calls it before
+// handing the long-running process to systemd/OpenRC.
+func (a *Agent) Register(ctx context.Context) error {
+	if a.server != "" {
+		return nil
+	}
+	if a.cfg.Agent.EnrollmentToken == "" {
+		return errors.New("agent enrollment_token is empty")
+	}
+	return a.register(ctx)
 }
 
 func (a *Agent) register(ctx context.Context) error {

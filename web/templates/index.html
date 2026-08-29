@@ -40,15 +40,34 @@
         <button data-action="hy2-buffer.enable">开启 HY2 UDP 16 MiB</button>
         <button data-action="hy2-buffer.disable" class="secondary">恢复 HY2 UDP</button>
         <button data-action="core.update" class="secondary">更新 sing-box</button>
+        <button data-action="backup.create" class="secondary">创建备份</button>
+        <button data-action="health.check" class="secondary">健康检查</button>
+        <button data-action="doctor.repair-safe" class="secondary">安全修复</button>
       </div>
     </section>
     <section class="card">
       <div class="section-title"><h2>节点</h2><a href="/api/v1/nodes" target="_blank">打开 JSON</a></div>
+      <form id="add-node-form" class="inline-form">
+        <input name="id" placeholder="节点 ID" pattern="[a-z0-9][a-z0-9._-]{0,47}" required>
+        <select name="protocol"><option value="ss">Shadowsocks 2022</option><option value="hy2">Hysteria2</option><option value="vmess">VMess</option></select>
+        <input name="port" type="number" min="1" max="65535" placeholder="端口" required>
+        <input name="domain" placeholder="域名（TLS/HY2）">
+        <input name="address" placeholder="服务器地址">
+        <button type="submit">添加节点</button>
+      </form>
       <div id="nodes" class="table-wrap">读取中…</div>
     </section>
     <section class="card">
       <div class="section-title"><h2>最近任务</h2><a href="/api/v1/tasks" target="_blank">打开 JSON</a></div>
       <div id="tasks" class="table-wrap">读取中…</div>
+    </section>
+    <section class="card">
+      <div class="section-title"><h2>安全设置</h2><span class="muted">修改后需要重新登录</span></div>
+      <form id="password-form" class="inline-form">
+        <input name="current" type="password" autocomplete="current-password" placeholder="当前密码" required>
+        <input name="next" type="password" autocomplete="new-password" minlength="12" placeholder="新密码（至少 12 位）" required>
+        <button type="submit">修改密码</button>
+      </form>
     </section>
   </main>
   <script src="/static/app.js" defer></script>

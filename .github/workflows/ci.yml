@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+      - run: gofmt -d cmd internal tests web
+      - run: CGO_ENABLED=0 go vet ./...
+      - run: CGO_ENABLED=0 go test -race ./...
+      - run: bash -n install.sh tests/install-smoke.sh
+      - run: bash tests/install-smoke.sh
+      - run: make release VERSION=0.0.0-ci
+
+  cross-build:
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            suffix: amd64
+          - goarch: arm64
+            suffix: arm64
+          - goarch: arm
+            goarm: '7'
+            suffix: armv7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+      - run: mkdir -p dist
+      - env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: go build -trimpath -ldflags '-s -w' -o dist/sb-web-linux-${{ matrix.suffix }} ./cmd/sb-web

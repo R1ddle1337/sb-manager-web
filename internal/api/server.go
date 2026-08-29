@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/subtle"
 	"encoding/base64"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -202,13 +204,15 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.agentAPI(w, r)
 		return
 	}
-	if _, ok := s.requireAuth(w, r); !ok {
+	session, ok := s.requireAuth(w, r)
+	if !ok {
 		return
 	}
 	switch r.URL.Path {
 	case "/api/v1/session":
-		session, _ := s.session(r)
 		writeJSON(w, http.StatusOK, map[string]any{"username": session.Username, "csrf": session.CSRF})
+	case "/api/v1/password":
+		s.changePassword(w, r, session)
 	case "/api/v1/status":
 		s.singleJSONAction(w, r, "status")
 	case "/api/v1/nodes":
@@ -219,12 +223,18 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.singleJSONAction(w, r, "bbr.status")
 	case "/api/v1/hy2-buffer/status":
 		s.singleJSONAction(w, r, "hy2-buffer.status")
+	case "/api/v1/logs":
+		s.plainAction(w, r, "logs")
 	case "/api/v1/servers":
 		s.servers(w, r)
 	case "/api/v1/enrollment":
 		s.enrollment(w, r)
 	case "/api/v1/tasks":
 		s.tasks(w, r)
+	case "/api/v1/audit":
+		s.audit(w, r)
+	case "/api/v1/batch/actions":
+		s.batchAction(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
 			s.serverAPI(w, r)
@@ -236,6 +246,114 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "接口不存在", nil)
 	}
+}
+
+func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		Current string `json:"current_password"`
+		New     string `json:"new_password"`
+	}
+	if err := decodeBody(r, &request); err != nil || !s.auth.Authenticate(session.Username, request.Current) {
+		writeError(w, http.StatusUnauthorized, "AUTH_FAILED", "当前密码错误", nil)
+		return
+	}
+	if err := s.auth.SetPassword(session.Username, request.New); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	_ = s.auth.DeleteSession(session.ID)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "login_required": true})
+}
+
+func (s *Server) plainAction(w http.ResponseWriter, r *http.Request, action string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	result, err := s.runLocal(action, nil)
+	if err != nil {
+		writeRunnerError(w, err, result)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"output": truncate(redact(result.Stdout), 65536)})
+}
+
+func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		ServerIDs []string       `json:"server_ids"`
+		Action    string         `json:"action"`
+		Args      map[string]any `json:"args"`
+	}
+	if err := decodeBody(r, &request); err != nil || len(request.ServerIDs) == 0 || len(request.ServerIDs) > 100 {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "server_ids 必须包含 1-100 台服务器", nil)
+		return
+	}
+	if request.Args == nil {
+		request.Args = map[string]any{}
+	}
+	if _, err := runner.ActionCommand(request.Action, request.Args); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	batchID, _ := auth.RandomToken(10)
+	created := []types.Task{}
+	for _, serverID := range request.ServerIDs {
+		server, err := s.store.GetServer(serverID)
+		if err != nil || (serverID != types.ServerLocal && !server.Online) {
+			continue
+		}
+		id, err := auth.RandomToken(12)
+		if err != nil {
+			continue
+		}
+		task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: "batch_" + batchID + "_" + serverID}
+		if s.store.PutTask(task) != nil {
+			continue
+		}
+		created = append(created, task)
+		if serverID == types.ServerLocal {
+			go s.executeLocal(task)
+		}
+	}
+	if len(created) == 0 {
+		writeError(w, http.StatusConflict, "NO_ELIGIBLE_SERVERS", "没有可执行的在线服务器", nil)
+		return
+	}
+	taskIDs := make([]string, 0, len(created))
+	for _, task := range created {
+		taskIDs = append(taskIDs, task.ID)
+	}
+	s.recordAudit("admin", request.Action, request.ServerIDs, taskIDs, "accepted")
+	writeJSON(w, http.StatusAccepted, map[string]any{"batch_id": "batch_" + batchID, "tasks": created})
+}
+
+func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	events, err := s.store.ListAudit(200)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *Server) recordAudit(actor, action string, serverIDs, taskIDs []string, result string) {
+	id, err := auth.RandomToken(10)
+	if err != nil {
+		return
+	}
+	_ = s.store.PutAudit(types.AuditEvent{ID: "evt_" + id, Actor: actor, Action: action, ServerIDs: serverIDs, TaskIDs: taskIDs, Result: result, CreatedAt: time.Now().UTC()})
 }
 
 func (s *Server) singleJSONAction(w http.ResponseWriter, r *http.Request, action string) {
@@ -265,6 +383,12 @@ func (s *Server) servers(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 		return
+	}
+	now := time.Now().UTC()
+	for index := range servers {
+		if servers[index].ID != types.ServerLocal && now.Sub(servers[index].LastSeen) > 2*time.Minute {
+			servers[index].Online = false
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
 }
@@ -314,6 +438,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "服务器不存在", nil)
 			return
 		}
+		server.AgentPublicKey = ""
 		writeJSON(w, http.StatusOK, server)
 		return
 	}
@@ -332,6 +457,50 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 5 && parts[4] == "actions" && r.Method == http.MethodPost {
 		s.createAction(w, r, serverID)
+		return
+	}
+	if len(parts) == 5 && parts[4] == "nodes" && r.Method == http.MethodPost {
+		var fields map[string]any
+		if err := decodeBody(r, &fields); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		fields["protocol"] = firstNonEmptyString(fields["protocol"])
+		request := actionRequest{Action: "node.add", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")}
+		s.enqueueAction(w, serverID, request)
+		return
+	}
+	if len(parts) == 5 && parts[4] == "nodes" && r.Method == http.MethodGet {
+		if serverID == types.ServerLocal {
+			s.singleJSONAction(w, r, "nodes.list")
+			return
+		}
+		server, err := s.store.GetServer(serverID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "服务器不存在", nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, server.Status)
+		return
+	}
+	if len(parts) == 6 && parts[4] == "nodes" && r.Method == http.MethodPatch {
+		var fields map[string]any
+		if err := decodeBody(r, &fields); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		fields["id"] = parts[5]
+		request := actionRequest{Action: "node.set", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")}
+		s.enqueueAction(w, serverID, request)
+		return
+	}
+	if len(parts) == 7 && parts[4] == "nodes" && r.Method == http.MethodPost {
+		if parts[6] != "enable" && parts[6] != "disable" && parts[6] != "delete" {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "节点操作不存在", nil)
+			return
+		}
+		request := actionRequest{Action: "node." + parts[6], Args: map[string]any{"id": parts[5]}, IdempotencyKey: r.Header.Get("Idempotency-Key")}
+		s.enqueueAction(w, serverID, request)
 		return
 	}
 	if len(parts) == 5 && parts[4] == "capabilities" && r.Method == http.MethodGet {
@@ -359,6 +528,10 @@ func (s *Server) createAction(w http.ResponseWriter, r *http.Request, serverID s
 	if request.Args == nil {
 		request.Args = map[string]any{}
 	}
+	s.enqueueAction(w, serverID, request)
+}
+
+func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request actionRequest) {
 	if _, err := runner.ActionCommand(request.Action, request.Args); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
 		return
@@ -389,7 +562,15 @@ func (s *Server) createAction(w http.ResponseWriter, r *http.Request, serverID s
 	if serverID == types.ServerLocal {
 		go s.executeLocal(task)
 	}
+	s.recordAudit("admin", request.Action, []string{serverID}, []string{task.ID}, "accepted")
 	writeJSON(w, http.StatusAccepted, task)
+}
+
+func firstNonEmptyString(value any) string {
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
 }
 
 func (s *Server) executeLocal(task types.Task) {
@@ -398,21 +579,13 @@ func (s *Server) executeLocal(task types.Task) {
 		s.finishTask(task.ID, false, "", err.Error())
 		return
 	}
-	result, err := s.runner.Run(nilContext{}, command...)
+	result, err := s.runner.Run(context.Background(), command...)
 	if err != nil {
 		s.finishTask(task.ID, false, result.Stdout, redact(result.Stderr+"\n"+err.Error()))
 		return
 	}
 	s.finishTask(task.ID, true, redact(result.Stdout), redact(result.Stderr))
 }
-
-// nilContext is a context.Context that is never canceled; Runner applies its own deadline.
-type nilContext struct{}
-
-func (nilContext) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (nilContext) Done() <-chan struct{}       { return nil }
-func (nilContext) Err() error                  { return nil }
-func (nilContext) Value(any) any               { return nil }
 
 func (s *Server) finishTask(id string, success bool, output, problem string) {
 	_, _ = s.store.UpdateTask(id, func(task *types.Task) error {
@@ -492,14 +665,11 @@ func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	server := types.Server{ID: "srv_" + id, Name: firstNonEmpty(request.Name, "远程服务器"), Address: request.Address, Region: request.Region, Arch: request.Arch, AgentPublicKey: request.PublicKey, Online: true, LastSeen: time.Now().UTC()}
-	if err := s.store.MarkEnrollmentUsed(hash); err != nil {
+	if err := s.store.ConsumeEnrollment(hash, server); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 		return
 	}
-	if err := s.store.PutServer(server); err != nil {
-		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
-		return
-	}
+	s.recordAudit("enrollment", "agent.register", []string{server.ID}, nil, "success")
 	writeJSON(w, http.StatusCreated, map[string]any{"server_id": server.ID, "heartbeat_interval": "30s"})
 }
 
@@ -617,7 +787,7 @@ func (s *Server) runLocal(action string, args map[string]any) (runner.Result, er
 	if err != nil {
 		return runner.Result{}, err
 	}
-	return s.runner.Run(nilContext{}, command...)
+	return s.runner.Run(context.Background(), command...)
 }
 
 func writeRunnerError(w http.ResponseWriter, err error, result runner.Result) {
@@ -661,11 +831,10 @@ func truncate(value string, max int) string {
 }
 
 func redact(value string) string {
-	for _, marker := range []string{"password", "token", "psk", "private_key"} {
-		value = strings.ReplaceAll(value, marker, marker+"_redacted")
-	}
-	return value
+	return secretJSONPattern.ReplaceAllString(value, `"$1":"[REDACTED]"`)
 }
+
+var secretJSONPattern = regexp.MustCompile(`(?i)"(password|token|psk|private_key|uuid)"\s*:\s*"[^"]*"`)
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {

@@ -25,7 +25,7 @@ type Server struct {
 	LastSeen           time.Time `json:"last_seen,omitempty"`
 	Status             any       `json:"status,omitempty"`
 	Capabilities       any       `json:"capabilities,omitempty"`
-	AgentPublicKey     string    `json:"-"`
+	AgentPublicKey     string    `json:"agent_public_key,omitempty"`
 	AgentIdentityState string    `json:"agent_identity_state,omitempty"`
 }
 
@@ -60,4 +60,14 @@ type Session struct {
 	CSRF      string    `json:"csrf"`
 	Username  string    `json:"username"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type AuditEvent struct {
+	ID        string    `json:"id"`
+	Actor     string    `json:"actor"`
+	Action    string    `json:"action"`
+	ServerIDs []string  `json:"server_ids,omitempty"`
+	TaskIDs   []string  `json:"task_ids,omitempty"`
+	Result    string    `json:"result"`
+	CreatedAt time.Time `json:"created_at"`
 }

@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+
+name="sb-manager-web-agent"
+description="sb-manager WebUI remote Agent"
+command="/usr/local/bin/sb-web"
+command_args="agent --config /etc/sb-manager-web/config.json"
+command_user="root:root"
+supervisor="supervise-daemon"
+supervise_daemon_args="--stdout /var/log/sb-manager-web/agent.log --stderr /var/log/sb-manager-web/agent.err.log"
+output_log="/var/log/sb-manager-web/agent.log"
+error_log="/var/log/sb-manager-web/agent.err.log"
+pidfile="/run/${RC_SVCNAME}.pid"
+command_background="yes"
+respawn_delay=5
+
+depend() {
+  need net
+}

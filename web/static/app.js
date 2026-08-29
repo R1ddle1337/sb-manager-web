@@ -33,7 +33,8 @@
   }
   function renderNodes(nodes) {
     if (!Array.isArray(nodes) || !nodes.length) { $('nodes').textContent = '暂无节点'; return; }
-    $('nodes').innerHTML = `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th></tr></thead><tbody>${nodes.map((node) => `<tr><td>${escapeHTML(node.id)}</td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="ok">启用</span>' : '停用'}</td></tr>`).join('')}</tbody></table>`;
+    $('nodes').innerHTML = `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th><th>操作</th></tr></thead><tbody>${nodes.map((node) => `<tr><td>${escapeHTML(node.id)}</td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="ok">启用</span>' : '停用'}</td><td><button class="secondary node-action" data-node-id="${escapeHTML(node.id)}" data-node-action="${node.enabled ? 'disable' : 'enable'}">${node.enabled ? '停用' : '启用'}</button></td></tr>`).join('')}</tbody></table>`;
+    document.querySelectorAll('.node-action').forEach((button) => button.addEventListener('click', () => nodeAction(button)));
   }
   function renderTasks(tasks) {
     if (!tasks.length) { $('tasks').textContent = '暂无任务'; return; }
@@ -52,6 +53,23 @@
       setTimeout(load, 2500);
     } catch (error) { showError(error.message); } finally { button.disabled = false; }
   }
+  async function nodeAction(button) {
+    button.disabled = true;
+    try {
+      await json(`/api/v1/servers/local/nodes/${encodeURIComponent(button.dataset.nodeId)}/${button.dataset.nodeAction}`, { method: 'POST', headers: { 'X-CSRF-Token': csrf() }, body: '{}' });
+      setTimeout(load, 900);
+    } catch (error) { showError(error.message); } finally { button.disabled = false; }
+  }
+  $('add-node-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const payload = { protocol: form.get('protocol'), id: form.get('id'), port: Number(form.get('port')), domain: form.get('domain'), address: form.get('address') };
+    try {
+      await json('/api/v1/servers/local/nodes', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify(payload) });
+      event.target.reset();
+      setTimeout(load, 900);
+    } catch (error) { showError(error.message); }
+  });
   document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => action(button.dataset.action, button)));
   $('refresh').addEventListener('click', load);
   $('add-server').addEventListener('click', async () => {
@@ -60,6 +78,14 @@
       const output = $('join-command');
       output.hidden = false;
       output.textContent = `有效期至：${enrollment.expires_at}\n\n${enrollment.join_command}`;
+    } catch (error) { showError(error.message); }
+  });
+  $('password-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    try {
+      await json('/api/v1/password', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ current_password: form.get('current'), new_password: form.get('next') }) });
+      window.location.href = '/login';
     } catch (error) { showError(error.message); }
   });
   load();

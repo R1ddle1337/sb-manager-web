@@ -19,6 +19,9 @@ button:hover { filter: brightness(1.12); }
 button:disabled { opacity: .6; cursor: wait; }
 button.secondary { background: #2b3749; }
 .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.inline-form { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+.inline-form input, .inline-form select { min-width: 130px; flex: 1; }
+select { border: 1px solid #3b4b65; border-radius: 8px; padding: 11px; color: #fff; background: #101722; font: inherit; }
 label { display: grid; gap: 7px; margin: 14px 0; color: #b9c5d8; }
 input { border: 1px solid #3b4b65; border-radius: 8px; padding: 11px; color: #fff; background: #101722; font: inherit; }
 .login-card { width: min(420px, calc(100% - 32px)); }
@@ -33,4 +36,4 @@ a { color: #80b7ff; }
 .ok { color: #71e0a5; }
 .bad { color: #ff9090; }
 code { color: #accbff; }
-@media (max-width: 760px) { .grid { grid-template-columns: repeat(2, 1fr); } .card { padding: 17px; } .hero { align-items: flex-start; } }
+@media (max-width: 760px) { .grid { grid-template-columns: repeat(2, 1fr); } .card { padding: 17px; } .hero { align-items: flex-start; } .inline-form > * { min-width: 100%; } }
