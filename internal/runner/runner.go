@@ -80,6 +80,8 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 			return nil, err
 		}
 		return []string{"node", "rotate", id}, nil
+	case "node.template.list":
+		return JSONArgs("node", "template", "list"), nil
 	case "node.enable-all", "node.disable-all":
 		verb := "enable-all"
 		if action == "node.disable-all" {
@@ -204,6 +206,23 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return command, nil
 	case "share.all":
 		return []string{"share", "all"}, nil
+	case "api.status":
+		return JSONArgs("api", "status"), nil
+	case "api.enable":
+		port, _ := args["port"].(float64)
+		if port == 0 {
+			port = 9090
+		}
+		if port < 1 || port > 65535 || port != float64(int(port)) {
+			return nil, errors.New("invalid API port")
+		}
+		command := []string{"api", "enable", fmt.Sprintf("%d", int(port))}
+		if dashboard, _ := args["dashboard"].(bool); dashboard {
+			command = append(command, "--dashboard")
+		}
+		return command, nil
+	case "api.disable":
+		return []string{"api", "disable"}, nil
 	case "export.outbounds":
 		return []string{"export", "outbounds"}, nil
 	case "subscription.list":
@@ -325,6 +344,10 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"firewall", "ufw-allow", "--yes"}, nil
 	case "firewall.clear-iptables":
 		return []string{"firewall", "clear-iptables", "--yes"}, nil
+	case "firewall.fail2ban":
+		return []string{"firewall", "fail2ban", "--yes"}, nil
+	case "firewall.ufw":
+		return []string{"firewall", "ufw", "--yes"}, nil
 	case "mux.status":
 		return JSONArgs("mux", "status"), nil
 	case "mux.enable":
@@ -400,6 +423,8 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return JSONArgs("notify", "status"), nil
 	case "notify.test":
 		return []string{"notify", "test"}, nil
+	case "notify.check":
+		return []string{"notify", "check"}, nil
 	case "notify.disable":
 		return []string{"notify", "disable"}, nil
 	case "notify.configure":
@@ -510,6 +535,16 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"restart"}, nil
 	case "doctor.network":
 		return []string{"doctor", "--network"}, nil
+	case "probe":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		return []string{"probe", nodeID}, nil
+	case "cloudflared.update":
+		return []string{"cloudflared", "update"}, nil
+	case "acme.update":
+		return []string{"acme", "update"}, nil
 	case "repair":
 		return []string{"repair", "--safe"}, nil
 	default:

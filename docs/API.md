@@ -31,6 +31,8 @@ GET /api/v1/mux
 GET /api/v1/tunnel
 GET /api/v1/notify
 GET /api/v1/settings
+GET /api/v1/api
+GET /api/v1/probe?node_id=NODE_ID
 GET /api/v1/config/validate
 GET /api/v1/config/diff
 GET /api/v1/logs?target=all&lines=200

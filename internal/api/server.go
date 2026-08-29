@@ -375,6 +375,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.tunnelToken(w, r, session)
 	case "/api/v1/notify":
 		s.singleJSONAction(w, r, "notify.status")
+	case "/api/v1/api":
+		s.singleJSONAction(w, r, "api.status")
+	case "/api/v1/probe":
+		s.probe(w, r)
 	case "/api/v1/notify/configure":
 		s.notifyConfigure(w, r, session)
 	case "/api/v1/settings":
@@ -562,6 +566,20 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	_, _ = io.WriteString(w, strings.Join(metricLines, "\n")+"\n")
+}
+
+func (s *Server) probe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	nodeID := r.URL.Query().Get("node_id")
+	result, err := s.runLocal("probe", map[string]any{"node_id": nodeID})
+	if err != nil {
+		writeRunnerError(w, err, result)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"node_id": nodeID, "output": redact(result.Stdout)})
 }
 
 func (s *Server) shares(w http.ResponseWriter, r *http.Request) {

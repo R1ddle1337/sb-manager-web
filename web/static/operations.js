@@ -36,6 +36,11 @@
   serviceTools.insertBefore(tunnelForm, serviceTools.querySelector('#mux-output'));
   serviceTools.querySelector('[data-read]').addEventListener('click', () => read('mux'));
   serviceTools.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => { if ((button.dataset.action === 'core.rollback' || button.dataset.action === 'mux.disable' || button.dataset.action === 'tunnel.stop') && !window.confirm('确认执行该服务操作？')) return; action(button.dataset.action); }));
+  const probeForm = document.createElement('form');
+  probeForm.className = 'inline-form';
+  probeForm.innerHTML = '<input name="node_id" placeholder="节点 ID" required><button class="secondary-button" type="submit">探测节点</button>';
+  serviceTools.insertBefore(probeForm, serviceTools.querySelector('#mux-output'));
+  probeForm.addEventListener('submit', async (event) => { event.preventDefault(); const nodeID = new FormData(event.target).get('node_id'); try { const result = await json(`/api/v1/probe?node_id=${encodeURIComponent(nodeID)}`); $('mux-output').textContent = result.output || ''; } catch (error) { notice(error.message); } });
   const muxForm = document.createElement('form');
   muxForm.className = 'inline-form';
   muxForm.innerHTML = '<input name="node_id" placeholder="SNI 路由节点 ID"><input name="sni" placeholder="SNI，例如 edge.example.com"><input name="backend_port" type="number" min="1" max="65535" placeholder="后端端口"><button class="secondary-button" type="submit">添加 SNI 路由</button><button class="secondary-button" id="mux-routes" type="button">查看路由</button>';
