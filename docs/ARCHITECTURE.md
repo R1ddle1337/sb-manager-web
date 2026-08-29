@@ -38,6 +38,12 @@ The Web service runs as the unprivileged `sbweb` user. A separate root helper ow
 - service sandboxing;
 - bounded command output and timeouts.
 
+To turn on enforced Agent mTLS, set `tls.enabled=true`, provide the WebUI
+server certificate/key, and set `tls.require_agent_mtls=true`. If
+`client_ca_file` and `client_ca_key_file` are empty, the controller creates a
+dedicated ten-year Agent CA under its data directory with mode `0600` for the
+key. This CA is separate from the public HTTPS server certificate.
+
 The public API is unchanged whether an action is handled by the helper or by a development-mode direct runner.
 
 ## Remote Agent mode

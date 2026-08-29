@@ -74,3 +74,23 @@ func TestSQLiteBackup(t *testing.T) {
 		t.Fatalf("backup was not created: %#v %v", info, err)
 	}
 }
+
+func TestDeleteUserRevokesSessions(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.PutUser(types.User{Username: "operator", Hash: "hash", Created: time.Now().UTC(), Role: "operator"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutSession(types.Session{ID: "session-operator", Username: "operator", CSRF: "csrf", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteUser("operator"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetSession("session-operator"); err == nil {
+		t.Fatal("deleted user's session was not revoked")
+	}
+}

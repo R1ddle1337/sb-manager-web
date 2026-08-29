@@ -118,8 +118,40 @@ func (s *Store) ListUsers() ([]types.User, error) {
 }
 
 func (s *Store) DeleteUser(username string) error {
-	_, err := s.db.Exec(`DELETE FROM users WHERE username=?`, username)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM users WHERE username=?`, username); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`SELECT id,data FROM sessions`)
+	if err != nil {
+		return err
+	}
+	var sessionIDs []string
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			rows.Close()
+			return err
+		}
+		var session types.Session
+		if decode(data, &session) == nil && session.Username == username {
+			sessionIDs = append(sessionIDs, id)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range sessionIDs {
+		if _, err := tx.Exec(`DELETE FROM sessions WHERE id=?`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) PutSession(value types.Session) error {

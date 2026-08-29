@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -151,6 +152,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if strings.TrimSpace(a.cfg.Agent.ControllerURL) == "" {
 		return errors.New("agent controller_url is empty")
 	}
+	if err := validateControllerURL(a.cfg.Agent.ControllerURL); err != nil {
+		return err
+	}
 	if a.server == "" {
 		if err := a.Register(ctx); err != nil {
 			return err
@@ -183,6 +187,20 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func validateControllerURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("controller URL is invalid")
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
+		return nil
+	}
+	return errors.New("remote controller must use HTTPS")
 }
 
 func (a *Agent) maybeRotateCertificate(ctx context.Context) error {
@@ -236,6 +254,9 @@ func (a *Agent) Sync(ctx context.Context) error {
 // Register performs one-time enrollment. The join command calls it before
 // handing the long-running process to systemd/OpenRC.
 func (a *Agent) Register(ctx context.Context) error {
+	if err := validateControllerURL(a.cfg.Agent.ControllerURL); err != nil {
+		return err
+	}
 	if a.server != "" {
 		return nil
 	}

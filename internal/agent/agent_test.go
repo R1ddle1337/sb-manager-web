@@ -22,3 +22,19 @@ func TestStateSnapshotDigestAndSchema(t *testing.T) {
 		t.Fatal("missing state file was accepted")
 	}
 }
+
+func TestControllerURLRequiresTLSRemotely(t *testing.T) {
+	for _, test := range []struct {
+		url string
+		ok  bool
+	}{
+		{"https://panel.example.com/", true},
+		{"http://127.0.0.1:9091", true},
+		{"http://panel.example.com", false},
+		{"https://panel.example.com/path", false},
+	} {
+		if got := validateControllerURL(test.url) == nil; got != test.ok {
+			t.Fatalf("validateControllerURL(%q)=%v, want %v", test.url, got, test.ok)
+		}
+	}
+}

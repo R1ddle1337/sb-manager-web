@@ -610,6 +610,10 @@ func (s *Server) usersAPI(w http.ResponseWriter, r *http.Request, session types.
 			writeError(w, http.StatusConflict, "USER_PROTECTED", "不能删除内置 admin 或当前登录用户", nil)
 			return
 		}
+		if _, err := s.store.GetUser(username); err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "用户不存在", nil)
+			return
+		}
 		if err := s.store.DeleteUser(username); err != nil {
 			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 			return

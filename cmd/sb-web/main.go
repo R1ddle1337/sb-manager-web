@@ -303,7 +303,7 @@ func join(args []string) error {
 
 func validateControllerURL(raw string) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || parsed.Host == "" || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return errors.New("控制端 URL 无效")
 	}
 	if parsed.Scheme == "https" {
