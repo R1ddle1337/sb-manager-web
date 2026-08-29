@@ -421,6 +421,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.metrics(w, r)
 	case "/api/v1/metrics/history":
 		s.metricsHistory(w, r)
+	case "/api/v1/events":
+		s.events(w, r)
 	case "/api/v1/certificates":
 		s.singleJSONAction(w, r, "cert.list")
 	case "/api/v1/certificates/cloudflare":
@@ -792,6 +794,48 @@ func (s *Server) metricsHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hours": hours, "metrics": values})
+}
+
+func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "STREAM_UNSUPPORTED", "服务器不支持事件流", nil)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	last := ""
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			tasks, err := s.store.ListTasks(20)
+			if err != nil {
+				return
+			}
+			payload, err := json.Marshal(map[string]any{"tasks": tasks})
+			if err != nil {
+				return
+			}
+			stamp := string(payload)
+			if stamp == last {
+				_, _ = io.WriteString(w, ": heartbeat\n\n")
+				flusher.Flush()
+				continue
+			}
+			last = stamp
+			_, _ = io.WriteString(w, "event: tasks\ndata: "+stamp+"\n\n")
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) probe(w http.ResponseWriter, r *http.Request) {

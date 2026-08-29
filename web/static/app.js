@@ -281,5 +281,9 @@
   $('menu-toggle').addEventListener('click', () => { const open = !$('sidebar').classList.contains('open'); $('sidebar').classList.toggle('open', open); $('scrim').hidden = !open; $('menu-toggle').setAttribute('aria-expanded', String(open)); });
   $('scrim').addEventListener('click', closeSidebar);
   document.querySelectorAll('[data-nav]').forEach((item) => item.addEventListener('click', () => { document.querySelectorAll('[data-nav]').forEach((nav) => nav.classList.toggle('active', nav === item)); $('page-title').textContent = navTitles[item.dataset.nav] || '总览'; closeSidebar(); }));
+  if ('EventSource' in window) {
+    const stream = new EventSource('/api/v1/events');
+    stream.addEventListener('tasks', (event) => { try { const payload = JSON.parse(event.data); allTasks = payload.tasks || []; renderTasks(allTasks); } catch (_) { /* reconnect will retry */ } });
+  }
   load();
 })();

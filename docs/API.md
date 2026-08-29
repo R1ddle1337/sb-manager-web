@@ -42,6 +42,8 @@ GET /api/v1/logs?target=all&lines=200
 GET /api/v1/certificates/{domain}
 POST /api/v1/certificates/cloudflare
 GET /api/v1/metrics
+GET /api/v1/metrics/history?hours=24
+GET /api/v1/events
 GET /api/v1/shares
 GET /api/v1/exports/outbounds
 GET /api/v1/subscriptions
