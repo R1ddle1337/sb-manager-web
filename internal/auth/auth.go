@@ -87,6 +87,14 @@ func (m *Manager) EnsureOwner() (InitialCredential, bool, error) {
 	return InitialCredential{Username: username, Password: password}, true, err
 }
 
+// EnsureAdmin is kept for integrations built against the initial alpha API.
+// New installations still receive the random owner username; callers using
+// this compatibility helper should obtain the username from ListUsers.
+func (m *Manager) EnsureAdmin() (string, bool, error) {
+	credential, created, err := m.EnsureOwner()
+	return credential.Password, created, err
+}
+
 func (m *Manager) CreateUser(username, password, role string) error {
 	username = strings.TrimSpace(username)
 	if !validUsername(username) {
