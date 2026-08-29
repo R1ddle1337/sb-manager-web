@@ -275,6 +275,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.singleJSONAction(w, r, "bbr.status")
 	case "/api/v1/hy2-buffer/status":
 		s.singleJSONAction(w, r, "hy2-buffer.status")
+	case "/api/v1/realm":
+		s.singleJSONAction(w, r, "realm.status")
 	case "/api/v1/certificates":
 		s.singleJSONAction(w, r, "cert.list")
 	case "/api/v1/logs":

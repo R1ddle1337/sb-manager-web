@@ -21,6 +21,7 @@ GET /api/v1/nodes
 GET /api/v1/capabilities
 GET /api/v1/bbr/status
 GET /api/v1/hy2-buffer/status
+GET /api/v1/realm
 GET /api/v1/logs
 ```
 
@@ -49,6 +50,7 @@ Supported system actions include status/capabilities reads plus:
 
 - `bbr.enable`, `bbr.disable`
 - `hy2-buffer.enable`, `hy2-buffer.disable`
+- `realm.enable`, `realm.disable`, `realm.status`
 - `core.check`, `core.update`, `core.rollback`
 - `backup.create`
 - `health.check`
@@ -69,7 +71,24 @@ POST  /api/v1/servers/{server_id}/nodes/{node_id}/users
 POST  /api/v1/servers/{server_id}/nodes/{node_id}/users/{user_id}/{enable|disable|delete|rotate}
 ```
 
-Node fields are allow-listed by the runner. Unknown JSON fields are rejected and no request is passed to a shell.
+Node fields are allow-listed by the runner. Unknown JSON fields are ignored by the command mapper and no request is passed to a shell. The mapper covers the 1.14-era Hysteria2 options (Gecko, Chrome QUIC fingerprint switch, BBR profile/debug and Realm binding) and Snell v5/v6 options.
+
+Realm enable arguments are structured and validated before task creation:
+
+```json
+{
+  "action": "realm.enable",
+  "args": {
+    "port": 9443,
+    "public_url": "https://relay.example.com",
+    "listen": "::",
+    "tls_domain": "relay.example.com",
+    "max_realms": 0
+  }
+}
+```
+
+The Realm token is generated and stored by `sb-manager` on the target server. It is never stored in the controller SQLite database.
 
 ## Batch and tasks
 

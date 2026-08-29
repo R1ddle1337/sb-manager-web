@@ -10,6 +10,7 @@
 - 登录、Argon2id 密码、Session、CSRF
 - 本机 `sb` CLI 安全调用和命令白名单
 - 状态、节点、核心能力、BBR、Hysteria2 UDP 缓冲区查看
+- 协议节点创建覆盖 VMess、Shadowsocks、AnyTLS、Hysteria2、Trojan、TUIC、VLESS、NaiveProxy、ShadowTLS、Snell v5/v6；含 1.14 Gecko/指纹/BBR profile 及 Hysteria Realm 参数
 - BBR/HY2/core 操作任务和任务状态
 - SQLite 控制端元数据（WAL、单文件、可直接备份）
 - 一次性 enrollment token

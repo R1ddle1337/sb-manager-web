@@ -14,8 +14,8 @@
   async function load() {
     $('alerts').innerHTML = '';
     try {
-      const [status, nodes, bbr, hy2, capabilities, tasks, servers] = await Promise.all([
-        json('/api/v1/status'), json('/api/v1/nodes'), json('/api/v1/bbr/status'), json('/api/v1/hy2-buffer/status'), json('/api/v1/capabilities'), json('/api/v1/tasks'), json('/api/v1/servers')
+      const [status, nodes, bbr, hy2, capabilities, tasks, servers, realm] = await Promise.all([
+        json('/api/v1/status'), json('/api/v1/nodes'), json('/api/v1/bbr/status'), json('/api/v1/hy2-buffer/status'), json('/api/v1/capabilities'), json('/api/v1/tasks'), json('/api/v1/servers'), json('/api/v1/realm')
       ]);
       const services = status.services || status.service || {};
       const serviceOK = services.sing_box?.active ?? services.singbox?.active ?? false;
@@ -26,10 +26,18 @@
       setState('hy2-state', hy2.enabled ? '已生效' : '未生效', hy2.enabled);
       $('core-version').textContent = `核心：${capabilities.version || '未知'}`;
       $('status-output').textContent = JSON.stringify(status, null, 2);
+      renderRealm(realm);
       renderNodes(list);
       renderTasks(tasks.tasks || []);
       renderServers(servers.servers || []);
     } catch (error) { showError(error.message); }
+  }
+  function renderRealm(realm) {
+    const value = realm.realm || realm;
+    const enabled = value && value.enabled === true;
+    setState('realm-state', enabled ? '已启用' : '未启用', enabled);
+    $('realm-output').textContent = JSON.stringify(value || {}, null, 2);
+    $('realm-disable').disabled = !enabled;
   }
   function renderNodes(nodes) {
     if (!Array.isArray(nodes) || !nodes.length) { $('nodes-list').textContent = '暂无节点'; return; }
@@ -76,11 +84,21 @@
   }
   $('add-node-form').addEventListener('submit', async (event) => {
     event.preventDefault();
-    const form = new FormData(event.target);
-    const payload = { protocol: form.get('protocol'), id: form.get('id'), port: Number(form.get('port')), domain: form.get('domain'), address: form.get('address') };
+    const payload = {};
+    for (const field of event.target.elements) {
+      if (!field.name || field.disabled) continue;
+      const group = field.closest('[data-protocols]');
+      if (group && group.hidden) continue;
+      if (field.type === 'checkbox') {
+        payload[field.name] = field.checked;
+      } else if (field.value !== '') {
+        payload[field.name] = field.type === 'number' ? Number(field.value) : field.value;
+      }
+    }
     try {
       await json('/api/v1/servers/local/nodes', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify(payload) });
       event.target.reset();
+      syncProtocolFields();
       showError('节点添加任务已创建。', true);
       setTimeout(load, 900);
     } catch (error) { showError(error.message); }
@@ -88,6 +106,18 @@
   document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => action(button.dataset.action, button)));
   $('refresh').addEventListener('click', load);
   $('server-refresh').addEventListener('click', load);
+  $('realm-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const args = { port: Number(form.get('port')), public_url: form.get('public_url'), listen: form.get('listen'), tls_domain: form.get('tls_domain'), max_realms: Number(form.get('max_realms') || 0) };
+    const button = event.target.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const task = await json('/api/v1/servers/local/actions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ action: 'realm.enable', args, idempotency_key: `realm.enable-${Date.now()}` }) });
+      showError(`Realm 任务已创建：${task.id}`, true);
+      setTimeout(load, 900);
+    } catch (error) { showError(error.message); } finally { button.disabled = false; }
+  });
   $('add-server').addEventListener('click', async () => {
     try {
       const enrollment = await json('/api/v1/enrollment', { method: 'POST', headers: { 'X-CSRF-Token': csrf() }, body: '{}' });
@@ -134,7 +164,17 @@
       window.location.href = '/login';
     } catch (error) { showError(error.message); }
   });
-  const navTitles = { overview: '总览', servers: '服务器', nodes: '节点与用户', 'quick-actions': '快捷操作', certificates: '证书', tasks: '任务与审计' };
+  const protocolSelect = document.querySelector('#add-node-form select[name="protocol"]');
+  const syncProtocolFields = () => {
+    const protocol = protocolSelect.value;
+    document.querySelectorAll('[data-protocols]').forEach((field) => {
+      const protocols = field.dataset.protocols.split(',');
+      field.hidden = !protocols.includes(protocol);
+    });
+  };
+  protocolSelect.addEventListener('change', syncProtocolFields);
+  syncProtocolFields();
+  const navTitles = { overview: '总览', servers: '服务器', nodes: '节点与用户', 'quick-actions': '快捷操作', realm: 'Hysteria Realm', certificates: '证书', tasks: '任务与审计' };
   const closeSidebar = () => { $('sidebar').classList.remove('open'); $('scrim').hidden = true; $('menu-toggle').setAttribute('aria-expanded', 'false'); };
   $('menu-toggle').addEventListener('click', () => { const open = !$('sidebar').classList.contains('open'); $('sidebar').classList.toggle('open', open); $('scrim').hidden = !open; $('menu-toggle').setAttribute('aria-expanded', String(open)); });
   $('scrim').addEventListener('click', closeSidebar);

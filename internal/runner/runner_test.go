@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,6 +19,44 @@ func TestActionCommandWhitelist(t *testing.T) {
 	args, err := ActionCommand("hy2-buffer.enable", nil)
 	if err != nil || len(args) != 3 || args[0] != "hy2" {
 		t.Fatalf("unexpected action command: %#v, %v", args, err)
+	}
+}
+
+func TestNodeAddCommandIncludes14AndSnellOptions(t *testing.T) {
+	args, err := ActionCommand("node.add", map[string]any{
+		"protocol":              "snell",
+		"id":                    "snell-v6",
+		"address":               "edge.example.com",
+		"port":                  float64(6160),
+		"snell_version":         "6",
+		"snell_mode":            "default",
+		"realm_id":              "slot-a",
+		"realm_ip_version":      "6",
+		"realm_port_mapping":    true,
+		"disable_chrome_parrot": true,
+		"brutal_debug":          true,
+		"obfs_min_packet_size":  float64(64),
+		"obfs_max_packet_size":  float64(1500),
+	})
+	if err != nil {
+		t.Fatalf("node add rejected: %v", err)
+	}
+	want := []string{"node", "add", "snell", "--id", "snell-v6", "--address", "edge.example.com", "--snell-version", "6", "--snell-mode", "default", "--realm-id", "slot-a", "--realm-ip-version", "6", "--port", "6160", "--obfs-min-packet-size", "64", "--obfs-max-packet-size", "1500", "--disable-chrome-parrot", "--brutal-debug", "--realm-port-mapping"}
+	if got := strings.Join(args, " "); got != strings.Join(want, " ") {
+		t.Fatalf("unexpected node command: %v", args)
+	}
+}
+
+func TestRealmEnableCommandValidation(t *testing.T) {
+	args, err := ActionCommand("realm.enable", map[string]any{"port": float64(9443), "public_url": "https://relay.example.com", "listen": "::", "tls_domain": "relay.example.com", "max_realms": float64(10)})
+	if err != nil {
+		t.Fatalf("realm enable rejected: %v", err)
+	}
+	if got := strings.Join(args, " "); got != "realm enable 9443 https://relay.example.com --listen :: --tls-domain relay.example.com --max-realms 10" {
+		t.Fatalf("unexpected Realm command: %v", args)
+	}
+	if _, err := ActionCommand("realm.enable", map[string]any{"port": float64(9443), "public_url": "https://relay.example.com/path"}); err == nil {
+		t.Fatal("Realm URL with a path was accepted")
 	}
 }
 

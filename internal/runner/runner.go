@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -86,6 +87,12 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"hy2", "buffer", "enable"}, nil
 	case "hy2-buffer.disable":
 		return []string{"hy2", "buffer", "disable"}, nil
+	case "realm.status":
+		return JSONArgs("realm", "status"), nil
+	case "realm.disable":
+		return []string{"realm", "disable"}, nil
+	case "realm.enable":
+		return realmEnableCommand(args)
 	case "core.check":
 		return JSONArgs("core", "check"), nil
 	case "core.update":
@@ -209,7 +216,7 @@ func nodeAddCommand(args map[string]any) ([]string, error) {
 		return nil, errors.New("invalid node protocol or id")
 	}
 	command := []string{"node", "add", protocol, "--id", id}
-	for _, field := range []struct{ key, flag string }{{"name", "--name"}, {"domain", "--domain"}, {"address", "--address"}, {"path", "--path"}, {"method", "--method"}, {"snell_version", "--snell-version"}, {"snell_mode", "--snell-mode"}, {"obfs", "--obfs"}, {"masquerade", "--masquerade"}} {
+	for _, field := range []struct{ key, flag string }{{"name", "--name"}, {"domain", "--domain"}, {"address", "--address"}, {"path", "--path"}, {"method", "--method"}, {"network", "--network"}, {"obfs", "--obfs"}, {"obfs_host", "--obfs-host"}, {"snell_version", "--snell-version"}, {"snell_mode", "--snell-mode"}, {"bbr_profile", "--bbr-profile"}, {"masquerade", "--masquerade"}, {"security", "--security"}, {"flow", "--flow"}, {"handshake_server", "--handshake-server"}, {"congestion_control", "--congestion-control"}, {"strict_mode", "--strict-mode"}, {"wildcard_sni", "--wildcard-sni"}, {"realm_id", "--realm-id"}, {"realm_ip_version", "--realm-ip-version"}} {
 		if value, ok := args[field.key].(string); ok && value != "" {
 			if len(value) > 253 || strings.ContainsAny(value, "\r\n\x00") {
 				return nil, errors.New("invalid node value")
@@ -223,8 +230,66 @@ func nodeAddCommand(args map[string]any) ([]string, error) {
 		}
 		command = append(command, "--port", fmt.Sprintf("%d", int(port)))
 	}
+	for _, field := range []struct{ key, flag string }{{"obfs_min_packet_size", "--obfs-min-packet-size"}, {"obfs_max_packet_size", "--obfs-max-packet-size"}, {"handshake_port", "--handshake-port"}} {
+		if value, ok := args[field.key].(float64); ok {
+			if value < 1 || value > 65535 || value != float64(int(value)) {
+				return nil, errors.New("invalid node numeric value")
+			}
+			command = append(command, field.flag, fmt.Sprintf("%d", int(value)))
+		}
+	}
+	if value, ok := args["disable_chrome_parrot"].(bool); ok && value {
+		command = append(command, "--disable-chrome-parrot")
+	}
+	if value, ok := args["brutal_debug"].(bool); ok && value {
+		command = append(command, "--brutal-debug")
+	}
+	if value, ok := args["realm_port_mapping"].(bool); ok && value {
+		command = append(command, "--realm-port-mapping")
+	}
+	if value, ok := args["quic"].(bool); ok && value {
+		command = append(command, "--quic")
+	}
 	if disabled, ok := args["disabled"].(bool); ok && disabled {
 		command = append(command, "--disabled")
+	}
+	return command, nil
+}
+
+func realmEnableCommand(args map[string]any) ([]string, error) {
+	port, ok := args["port"].(float64)
+	if !ok || port < 1 || port > 65535 || port != float64(int(port)) {
+		return nil, errors.New("invalid Realm port")
+	}
+	publicURL, _ := args["public_url"].(string)
+	parsed, err := url.Parse(publicURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("invalid Realm public URL")
+	}
+	listen, _ := args["listen"].(string)
+	if listen == "" {
+		listen = "::"
+	}
+	if len(listen) > 128 || strings.ContainsAny(listen, "\r\n\x00") {
+		return nil, errors.New("invalid Realm listen address")
+	}
+	command := []string{"realm", "enable", fmt.Sprintf("%d", int(port)), publicURL, "--listen", listen}
+	if domain, _ := args["tls_domain"].(string); domain != "" {
+		if !safeDomain.MatchString(domain) {
+			return nil, errors.New("invalid Realm TLS domain")
+		}
+		command = append(command, "--tls-domain", domain)
+	}
+	max := float64(0)
+	if value, present := args["max_realms"]; present {
+		var ok bool
+		max, ok = value.(float64)
+		if !ok || max < 0 || max > 1000000 || max != float64(int(max)) {
+			return nil, errors.New("invalid Realm max_realms")
+		}
+	}
+	if max > 0 {
+		command = append(command, "--max-realms", fmt.Sprintf("%d", int(max)))
 	}
 	return command, nil
 }

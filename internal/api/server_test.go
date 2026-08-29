@@ -22,6 +22,7 @@ func fakeSB(t *testing.T) string {
 	path := filepath.Join(t.TempDir(), "sb")
 	content := `#!/bin/sh
 case "$*" in
+  *"realm status"*) printf '%s\n' '{"enabled":false,"listen":"::","port":9443}' ;;
   *"status"*) printf '%s\n' '{"services":{"sing_box":{"active":true}},"nodes":[]}' ;;
   *"node list"*) printf '%s\n' '{"nodes":[]}' ;;
   *"capabilities"*) printf '%s\n' '{"version":"1.14.0-rc.2","tags":[]}' ;;
@@ -84,6 +85,18 @@ func TestLoginStatusAndAction(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(data), `"sing_box"`) {
 		t.Fatalf("status response: %d %s", response.StatusCode, data)
+	}
+	realmResponse, err := client.Get(server.URL + "/api/v1/realm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var realm map[string]any
+	if err := json.NewDecoder(realmResponse.Body).Decode(&realm); err != nil {
+		t.Fatal(err)
+	}
+	realmResponse.Body.Close()
+	if realmResponse.StatusCode != http.StatusOK || realm["enabled"] != false {
+		t.Fatalf("realm response: %d %#v", realmResponse.StatusCode, realm)
 	}
 	body := strings.NewReader(`{"action":"bbr.enable","idempotency_key":"test-action-1"}`)
 	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/servers/local/actions", body)

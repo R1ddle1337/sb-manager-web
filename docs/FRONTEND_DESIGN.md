@@ -19,6 +19,7 @@ WebUI 借鉴 [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/
 ├── 服务器（清单、在线状态、批量任务）
 ├── 节点与用户（节点 CRUD、分享、用户）
 ├── 快捷操作（BBR、HY2 缓冲、核心、备份、健康检查）
+├── Hysteria Realm（全局启停和参数）
 ├── 证书
 └── 任务与审计
 
@@ -63,6 +64,6 @@ WebUI 借鉴 [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/
 ## 后续迭代顺序
 
 1. 将任务表增加状态筛选和失败详情抽屉。
-2. 增加节点编辑表单，并根据核心能力动态显示 1.14 协议字段。
+2. 增加节点编辑表单，并将核心能力探测结果联动到 1.14 协议字段。
 3. 增加服务器详情页和批量任务进度条，保留单服务器失败隔离。
 4. 在不改变现有 API 的前提下补充浅色主题和用户自定义刷新间隔。
