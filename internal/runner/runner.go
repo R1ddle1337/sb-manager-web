@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -402,6 +403,28 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return JSONArgs("settings", "show"), nil
 	case "settings.detect-ip":
 		return []string{"settings", "detect-ip"}, nil
+	case "settings.address":
+		address, _ := args["address"].(string)
+		if address != "auto" && !safeDomain.MatchString(address) && net.ParseIP(address) == nil {
+			return nil, errors.New("invalid default server address")
+		}
+		return []string{"settings", "address", address}, nil
+	case "settings.outbound-ip":
+		strategy, _ := args["strategy"].(string)
+		if strategy != "prefer_ipv4" && strategy != "prefer_ipv6" && strategy != "ipv4_only" {
+			return nil, errors.New("invalid outbound IP strategy")
+		}
+		return []string{"settings", "outbound-ip", strategy}, nil
+	case "settings.dns":
+		kind, _ := args["kind"].(string)
+		value, _ := args["value"].(string)
+		if kind != "optimistic" && kind != "optimistic-timeout" && kind != "timeout" {
+			return nil, errors.New("invalid DNS setting")
+		}
+		if safeArgument(value, 32) == "" {
+			return nil, errors.New("invalid DNS value")
+		}
+		return []string{"settings", "dns", kind, value}, nil
 	case "service.restart":
 		return []string{"restart"}, nil
 	case "doctor.network":
