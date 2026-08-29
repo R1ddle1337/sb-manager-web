@@ -346,6 +346,31 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"notify", "test"}, nil
 	case "notify.disable":
 		return []string{"notify", "disable"}, nil
+	case "notify.configure":
+		provider, _ := args["provider"].(string)
+		if provider != "telegram" && provider != "wecom" && provider != "webhook" {
+			return nil, errors.New("invalid notification provider")
+		}
+		credentialFile, _ := args["credential_file"].(string)
+		if credentialFile == "" || strings.ContainsAny(credentialFile, "\r\n\x00") {
+			return nil, errors.New("notification credential file is required")
+		}
+		command := []string{"notify", "configure", provider, "--token-file", credentialFile}
+		if chatID, _ := args["chat_id"].(string); chatID != "" {
+			chatID = safeArgument(chatID, 128)
+			if chatID == "" {
+				return nil, errors.New("invalid notification chat id")
+			}
+			command = append(command, "--chat-id", chatID)
+		}
+		if thresholds, _ := args["thresholds"].(string); thresholds != "" {
+			thresholds = safeArgument(thresholds, 64)
+			if thresholds == "" {
+				return nil, errors.New("invalid notification thresholds")
+			}
+			command = append(command, "--thresholds", thresholds)
+		}
+		return command, nil
 	case "traffic.status":
 		command := JSONArgs("traffic", "status")
 		if nodeID, _ := args["node_id"].(string); nodeID != "" {

@@ -369,6 +369,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.singleJSONAction(w, r, "tunnel.status")
 	case "/api/v1/notify":
 		s.singleJSONAction(w, r, "notify.status")
+	case "/api/v1/notify/configure":
+		s.notifyConfigure(w, r, session)
 	case "/api/v1/settings":
 		s.singleJSONAction(w, r, "settings.show")
 	case "/api/v1/config/validate":
@@ -404,6 +406,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/batch/actions":
 		s.batchAction(w, r)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/api/v1/certificates/") {
+			s.certificateInspect(w, r)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/users/") {
 			s.usersAPI(w, r, session)
 			return
@@ -418,6 +424,29 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "接口不存在", nil)
 	}
+}
+
+func (s *Server) certificateInspect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	domain := strings.TrimPrefix(r.URL.Path, "/api/v1/certificates/")
+	if domain == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "域名不能为空", nil)
+		return
+	}
+	result, err := s.runLocal("cert.inspect", map[string]any{"domain": domain})
+	if err != nil {
+		writeRunnerError(w, err, result)
+		return
+	}
+	if !json.Valid([]byte(result.Stdout)) {
+		writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = io.WriteString(w, result.Stdout)
 }
 
 func (s *Server) databaseBackup(w http.ResponseWriter, r *http.Request, session types.Session) {
@@ -554,6 +583,60 @@ func (s *Server) exportsOutbounds(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
+}
+
+func (s *Server) notifyConfigure(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		Provider   string `json:"provider"`
+		Credential string `json:"credential"`
+		ChatID     string `json:"chat_id"`
+		Thresholds string `json:"thresholds"`
+	}
+	if err := decodeBody(r, &request); err != nil || request.Credential == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "provider 和 credential 必填", nil)
+		return
+	}
+	if len(request.Credential) > 4096 || strings.ContainsAny(request.Credential, "\r\n\x00") {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "credential 无效", nil)
+		return
+	}
+	tmp, err := os.CreateTemp(s.cfg.DataDir, ".notification-credential-*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+		return
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+		return
+	}
+	if _, err := tmp.WriteString(request.Credential + "\n"); err != nil {
+		tmp.Close()
+		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+		return
+	}
+	args := map[string]any{"provider": request.Provider, "credential_file": tmpName, "chat_id": request.ChatID, "thresholds": request.Thresholds}
+	if _, err := runner.ActionCommand("notify.configure", args); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	result, runErr := s.runLocal("notify.configure", args)
+	if runErr != nil {
+		writeRunnerError(w, runErr, result)
+		return
+	}
+	s.recordAudit(session.Username, "notify.configure", nil, nil, "success")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": redact(result.Stdout)})
 }
 
 func (s *Server) subscriptionStatus(w http.ResponseWriter, r *http.Request) {

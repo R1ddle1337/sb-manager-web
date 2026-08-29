@@ -13,8 +13,10 @@
   const setState = (id, value, good) => { const el = $(id); el.textContent = value; el.className = good ? 'ok' : 'bad'; };
   let loading = false;
   let allTasks = [];
+  let lastServers = [];
   let taskFilter = 'all';
   let refreshTimer = null;
+  let serverFilter = '';
   async function load() {
     if (loading) return;
     loading = true;
@@ -37,7 +39,8 @@
       renderNodes(list);
       allTasks = tasks.tasks || [];
       renderTasks(allTasks);
-      renderServers(servers.servers || []);
+      lastServers = servers.servers || [];
+      renderServers(lastServers);
     } catch (error) { showError(error.message); } finally { loading = false; }
   }
   function renderRealm(realm) {
@@ -65,8 +68,9 @@
     document.querySelectorAll('.task-detail').forEach((button) => button.addEventListener('click', () => showTaskDetail(button.dataset.taskId)));
   }
   function renderServers(servers) {
-    if (!servers.length) { $('servers-list').textContent = '暂无服务器'; return; }
-    $('servers-list').innerHTML = `<table><thead><tr><th>选择</th><th>名称</th><th>地址</th><th>区域</th><th>状态</th><th>核心</th><th>最近心跳</th></tr></thead><tbody>${servers.map((server) => `<tr><td><input class="server-select" type="checkbox" value="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}></td><td><a href="/servers/${encodeURIComponent(server.id)}"><strong>${escapeHTML(server.name)}</strong></a></td><td>${escapeHTML(server.address || server.id)}</td><td>${escapeHTML(server.region)}</td><td>${server.online ? '<span class="ok">● 在线</span>' : '<span class="bad">● 离线</span>'}</td><td>${escapeHTML(server.core_version)}</td><td>${escapeHTML(server.last_seen)}</td></tr>`).join('')}</tbody></table>`;
+    const filtered = serverFilter ? servers.filter((server) => `${server.id} ${server.name} ${server.address} ${server.region}`.toLowerCase().includes(serverFilter.toLowerCase())) : servers;
+    if (!filtered.length) { $('servers-list').textContent = serverFilter ? '没有匹配的服务器' : '暂无服务器'; return; }
+    $('servers-list').innerHTML = `<table><thead><tr><th>选择</th><th>名称</th><th>地址</th><th>区域</th><th>状态</th><th>核心</th><th>最近心跳</th></tr></thead><tbody>${filtered.map((server) => `<tr><td><input class="server-select" type="checkbox" value="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}></td><td><a href="/servers/${encodeURIComponent(server.id)}"><strong>${escapeHTML(server.name)}</strong></a></td><td>${escapeHTML(server.address || server.id)}</td><td>${escapeHTML(server.region)}</td><td>${server.online ? '<span class="ok">● 在线</span>' : '<span class="bad">● 离线</span>'}</td><td>${escapeHTML(server.core_version)}</td><td>${escapeHTML(server.last_seen)}</td></tr>`).join('')}</tbody></table>`;
   }
   async function action(name, button) {
     button.disabled = true;
@@ -205,6 +209,12 @@
     } catch (error) { showError(error.message); }
   });
   const protocolSelect = document.querySelector('#add-node-form select[name="protocol"]');
+  const serverSearch = document.createElement('input');
+  serverSearch.type = 'search';
+  serverSearch.placeholder = '搜索名称 / 地址 / 地区';
+  serverSearch.className = 'server-search';
+  $('servers').querySelector('.panel-header').appendChild(serverSearch);
+  serverSearch.addEventListener('input', () => { serverFilter = serverSearch.value.trim(); renderServers(lastServers); });
   const strategySelect = document.createElement('select');
   strategySelect.id = 'batch-strategy';
   strategySelect.setAttribute('aria-label', '发布策略');

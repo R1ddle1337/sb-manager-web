@@ -99,6 +99,7 @@ func TestOperationsCommandMappings(t *testing.T) {
 		{"traffic.reconcile", nil, "traffic reconcile"},
 		{"health.configure", map[string]any{"disk_free": "10"}, "health configure --disk-free 10"},
 		{"mux.route.list", nil, "--json mux route list"},
+		{"notify.configure", map[string]any{"provider": "telegram", "credential_file": "/tmp/credential", "chat_id": "123"}, "notify configure telegram --token-file /tmp/credential --chat-id 123"},
 	}
 	for _, test := range tests {
 		args, err := ActionCommand(test.action, test.args)
