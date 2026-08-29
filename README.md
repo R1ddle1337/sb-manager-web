@@ -17,6 +17,7 @@
 - 多服务器清单、批量 BBR/HY2/核心/备份/健康任务、失败阈值和审计记录
 - 节点新增/编辑/启停/删除、用户、分享链接和证书操作 API
 - systemd/OpenRC 服务文件
+- root helper Unix Socket 权限隔离（Web 服务使用 `sbweb` 用户）
 - amd64/arm64/armv7 交叉编译
 
 完整开发设计当前维护在 [`sb-manager/docs/SB_MANAGER_WEB_DEVELOPMENT.md`](https://github.com/R1ddle1337/sb-manager/blob/main/docs/SB_MANAGER_WEB_DEVELOPMENT.md)，新项目稳定后会同步维护本项目自身的架构文档。

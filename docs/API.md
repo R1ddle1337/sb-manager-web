@@ -2,6 +2,8 @@
 
 All browser APIs require a valid `sbweb_session` cookie. Mutating browser requests also require the `X-CSRF-Token` header matching the session CSRF token.
 
+需要 root 的操作由本机 `sb-manager-web-helper` Unix Socket 执行；Web 服务进程本身不应直接拥有修改 sb-manager 系统文件的权限。
+
 ## Session
 
 ```text

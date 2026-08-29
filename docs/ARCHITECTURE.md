@@ -28,7 +28,7 @@ The source of truth remains `/etc/sb-manager/state.json` and its protected secre
 
 The local server is stored as ID `local`. Read actions execute immediately; mutations create a task and execute the matching CLI action asynchronously. The browser polls tasks to render the result.
 
-The first release runs the Web service as root because the existing `sb` CLI owns root-only state and system services. Risk is constrained by:
+The Web service runs as the unprivileged `sbweb` user. A separate root helper owns a mode-0660 Unix socket and is used only when a CLI action needs root access. If the helper is unavailable, the WebUI does not silently elevate and the task fails. Risk is constrained by:
 
 - loopback-only default listener;
 - login, session and CSRF checks;
@@ -38,7 +38,7 @@ The first release runs the Web service as root because the existing `sb` CLI own
 - service sandboxing;
 - bounded command output and timeouts.
 
-A later privilege split can place the HTTP server behind a restricted Unix-socket helper without changing the public API.
+The public API is unchanged whether an action is handled by the helper or by a development-mode direct runner.
 
 ## Remote Agent mode
 
