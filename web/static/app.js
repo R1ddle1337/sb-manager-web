@@ -41,7 +41,19 @@
       renderTasks(allTasks);
       lastServers = servers.servers || [];
       renderServers(lastServers);
+      loadTrend();
     } catch (error) { showError(error.message); } finally { loading = false; }
+  }
+  async function loadTrend() {
+    try {
+      const result = await json('/api/v1/metrics/history?hours=24');
+      const samples = result.metrics || [];
+      if (!samples.length) { $('metric-trend').textContent = '暂无历史样本，点击“采样并刷新”开始记录。'; return; }
+      const recent = samples.slice(0, 24).reverse();
+      const values = recent.map((sample) => Number(sample.summary?.nodes || 0));
+      const max = Math.max(1, ...values);
+      $('metric-trend').innerHTML = `<div class="trend-legend"><span>节点数量</span><strong>${values[values.length - 1]}</strong></div><div class="trend-bars">${values.map((value, index) => `<span title="${escapeHTML(recent[index].recorded_at)}: ${value}" style="height:${Math.max(8, Math.round(value / max * 100))}%"></span>`).join('')}</div>`;
+    } catch (error) { $('metric-trend').textContent = error.message; }
   }
   function renderRealm(realm) {
     const value = realm.realm || realm;
@@ -147,6 +159,7 @@
   });
   document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => action(button.dataset.action, button)));
   $('refresh').addEventListener('click', load);
+  $('trend-refresh').addEventListener('click', async () => { try { await json('/api/v1/metrics', { headers: { Accept: 'text/plain' } }); await loadTrend(); } catch (error) { showError(error.message); } });
   $('server-refresh').addEventListener('click', load);
   $('realm-form').addEventListener('submit', async (event) => {
     event.preventDefault();

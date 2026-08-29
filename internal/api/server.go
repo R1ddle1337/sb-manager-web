@@ -419,6 +419,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.singleJSONAction(w, r, "config.diff")
 	case "/api/v1/metrics":
 		s.metrics(w, r)
+	case "/api/v1/metrics/history":
+		s.metricsHistory(w, r)
 	case "/api/v1/certificates":
 		s.singleJSONAction(w, r, "cert.list")
 	case "/api/v1/certificates/cloudflare":
@@ -748,7 +750,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.runLocal("status", nil)
-	if err != nil {
+	if err != nil && !json.Valid([]byte(result.Stdout)) {
 		writeRunnerError(w, err, result)
 		return
 	}
@@ -757,6 +759,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "INVALID_SB_JSON", "sb 返回了无效 JSON", nil)
 		return
 	}
+	_ = s.store.PutMetric(time.Now().UTC(), status)
 	metricLines := []string{"# HELP sb_manager_up Whether sb-manager status is available.", "# TYPE sb_manager_up gauge", "sb_manager_up 1"}
 	if summary, ok := status["summary"].(map[string]any); ok {
 		for key, metric := range map[string]string{"nodes": "sb_manager_nodes", "enabled_nodes": "sb_manager_enabled_nodes", "certificates": "sb_manager_certificates", "issues": "sb_manager_issues"} {
@@ -767,6 +770,28 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	_, _ = io.WriteString(w, strings.Join(metricLines, "\n")+"\n")
+}
+
+func (s *Server) metricsHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	hours := 24
+	if value := r.URL.Query().Get("hours"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 168 {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "hours 必须是 1-168", nil)
+			return
+		}
+		hours = parsed
+	}
+	values, err := s.store.ListMetrics(time.Now().UTC().Add(-time.Duration(hours)*time.Hour), 10000)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"hours": hours, "metrics": values})
 }
 
 func (s *Server) probe(w http.ResponseWriter, r *http.Request) {

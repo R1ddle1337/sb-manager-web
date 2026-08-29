@@ -29,6 +29,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key
 CREATE TABLE IF NOT EXISTS enrollments (hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, used INTEGER NOT NULL, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS metrics (recorded_at TEXT PRIMARY KEY, data BLOB NOT NULL);
 PRAGMA user_version=1;
 `
 
@@ -198,6 +199,46 @@ func (s *Store) ListAPITokens() ([]types.APIToken, error) {
 
 func (s *Store) DeleteAPIToken(id string) error {
 	_, err := s.db.Exec(`DELETE FROM api_tokens WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) PutMetric(recorded time.Time, value any) error {
+	data, err := encode(value)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO metrics(recorded_at,data) VALUES(?,?) ON CONFLICT(recorded_at) DO UPDATE SET data=excluded.data`, stamp(recorded), data)
+	return err
+}
+
+func (s *Store) ListMetrics(since time.Time, limit int) ([]map[string]any, error) {
+	if limit < 1 || limit > 10000 {
+		limit = 1000
+	}
+	rows, err := s.db.Query(`SELECT recorded_at,data FROM metrics WHERE recorded_at>=? ORDER BY recorded_at DESC LIMIT ?`, stamp(since), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := []map[string]any{}
+	for rows.Next() {
+		var recorded string
+		var data []byte
+		var value map[string]any
+		if err := rows.Scan(&recorded, &data); err != nil {
+			return nil, err
+		}
+		if err := decode(data, &value); err != nil {
+			return nil, err
+		}
+		value["recorded_at"] = recorded
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func (s *Store) PruneMetrics(before time.Time) error {
+	_, err := s.db.Exec(`DELETE FROM metrics WHERE recorded_at<?`, stamp(before))
 	return err
 }
 

@@ -94,3 +94,26 @@ func TestDeleteUserRevokesSessions(t *testing.T) {
 		t.Fatal("deleted user's session was not revoked")
 	}
 }
+
+func TestMetricsAndAPITokens(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	if err := store.PutMetric(now, map[string]any{"summary": map[string]any{"nodes": 2}}); err != nil {
+		t.Fatal(err)
+	}
+	metrics, err := store.ListMetrics(now.Add(-time.Minute), 10)
+	if err != nil || len(metrics) != 1 {
+		t.Fatalf("metrics=%#v err=%v", metrics, err)
+	}
+	if err := store.PutAPIToken(types.APIToken{ID: "tok_test", Name: "metrics", Hash: "hash", Role: "viewer", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := store.FindAPITokenByHash("hash")
+	if err != nil || token.ID != "tok_test" {
+		t.Fatalf("token=%#v err=%v", token, err)
+	}
+}
