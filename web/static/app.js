@@ -173,10 +173,14 @@
     const selected = [...document.querySelectorAll('.server-select:checked')].map((item) => item.value);
     if (!selected.length) { showError('请至少选择一台在线服务器。'); return; }
     const actionName = new FormData(event.target).get('action');
-    if (!window.confirm(`确认在 ${selected.length} 台服务器执行 ${actionName}？`)) return;
+    const strategy = $('batch-strategy').value;
+    const percentage = Number($('batch-percentage').value || 100);
     try {
-      const strategy = $('batch-strategy').value;
-      const percentage = Number($('batch-percentage').value || 100);
+      const preview = await json('/api/v1/batch/preflight', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ server_ids: selected, action: actionName, args: {} }) });
+      const eligible = preview.eligible || [];
+      const skipped = preview.skipped || [];
+      const skippedText = skipped.length ? `，跳过 ${skipped.length} 台（${skipped.map((item) => item.id + ': ' + item.reason).join('；')}）` : '';
+      if (!eligible.length || !window.confirm(`预检查：${eligible.length} 台可执行${skippedText}。确认继续？`)) return;
       const result = await json('/api/v1/batch/actions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ server_ids: selected, action: actionName, args: {}, strategy, percentage }) });
       showError(`批量任务 ${result.batch_id} 已创建，共 ${result.tasks.length} 项。`, true);
       setTimeout(load, 1200);
