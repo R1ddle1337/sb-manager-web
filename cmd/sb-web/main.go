@@ -102,12 +102,12 @@ func serve(args []string) error {
 		return err
 	}
 	defer store.Close()
-	handler, initialPassword, err := api.New(cfg, store)
+	handler, initialCredential, err := api.New(cfg, store)
 	if err != nil {
 		return err
 	}
-	if initialPassword != "" {
-		fmt.Printf("首次管理员账号：admin\n首次管理员密码：%s\n请登录后立即修改密码。\n", initialPassword)
+	if initialCredential.Password != "" {
+		fmt.Printf("首次管理员账号：%s\n首次管理员密码：%s\n请登录后立即修改密码。\n", initialCredential.Username, initialCredential.Password)
 	}
 	httpServer := &http.Server{Addr: cfg.Listen, Handler: handler.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -157,14 +157,14 @@ func initialize(args []string) error {
 		return err
 	}
 	defer store.Close()
-	_, password, err := api.New(cfg, store)
+	_, credential, err := api.New(cfg, store)
 	if err != nil {
 		return err
 	}
-	if password == "" {
+	if credential.Password == "" {
 		fmt.Println("WebUI 已初始化；管理员密码已存在，请使用 reset-admin-password 重置。")
 	} else {
-		fmt.Printf("首次管理员账号：admin\n首次管理员密码：%s\n请登录后立即修改密码。\n", password)
+		fmt.Printf("首次管理员账号：%s\n首次管理员密码：%s\n请登录后立即修改密码。\n", credential.Username, credential.Password)
 	}
 	return config.Save(*configPath, cfg)
 }
@@ -335,18 +335,8 @@ func status(args []string) error {
 }
 
 func resetPassword(args []string) error {
-	if len(args) > 1 {
-		return errors.New("用法：sb-web reset-admin-password [新密码]")
-	}
-	password := ""
-	if len(args) == 1 {
-		password = args[0]
-	} else {
-		var err error
-		password, err = auth.RandomToken(18)
-		if err != nil {
-			return err
-		}
+	if len(args) > 2 {
+		return errors.New("用法：sb-web reset-admin-password [用户名] [新密码]")
 	}
 	cfg, err := config.Load(defaultConfigPath)
 	if err != nil {
@@ -357,10 +347,26 @@ func resetPassword(args []string) error {
 		return err
 	}
 	defer store.Close()
-	if err := auth.New(store).SetPassword("admin", password); err != nil {
+	manager := auth.New(store)
+	username, err := manager.AdminUsername()
+	if err != nil {
 		return err
 	}
-	fmt.Printf("新的管理员密码：%s\n", password)
+	password := ""
+	if len(args) == 2 {
+		username, password = args[0], args[1]
+	} else if len(args) == 1 {
+		password = args[0]
+	} else {
+		password, err = auth.RandomToken(18)
+		if err != nil {
+			return err
+		}
+	}
+	if err := manager.SetPassword(username, password); err != nil {
+		return err
+	}
+	fmt.Printf("账号 %s 的新管理员密码：%s\n", username, password)
 	return nil
 }
 
@@ -375,7 +381,7 @@ func usage() {
   sb-web join CONTROLLER_URL TOKEN
   sb-web status [--listen HOST:PORT]
   sb-web init [--config PATH]           初始化配置和管理员账号
-  sb-web reset-admin-password [PASSWORD]
+  sb-web reset-admin-password [USERNAME] [PASSWORD]
   sb-web version
 `)
 }

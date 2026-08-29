@@ -15,6 +15,11 @@ Browser
 
 The source of truth remains `/etc/sb-manager/state.json` and its protected secret/certificate files.
 
+On first initialization the controller creates a random owner username (with
+the `admin` role) and a random password; neither the username nor password is
+hard-coded to `admin`. The credentials are printed once by `sb-web init` or
+`sb-web server` and can be rotated with `sb-web reset-admin-password`.
+
 ## Components
 
 - `cmd/sb-web`: server, Agent, join, service and password commands.
@@ -61,6 +66,9 @@ Transport uses normal HTTPS certificate verification. Application request signat
 Each heartbeat also carries a SHA-256 digest of the target's state file. Mutating tasks include the digest observed by the controller; the Agent fails a task instead of applying it when the state has drifted locally.
 
 No node password, certificate private key, Snell PSK or Realm token is included in heartbeat data.
+The heartbeat may include a non-secret node configuration snapshot (protocol,
+ports and 1.14 options) so remote detail pages can edit the same fields; user
+credentials and secret files are still excluded.
 
 ## Task model
 

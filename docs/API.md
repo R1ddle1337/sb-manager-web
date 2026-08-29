@@ -71,7 +71,7 @@ POST  /api/v1/servers/{server_id}/nodes/{node_id}/users
 POST  /api/v1/servers/{server_id}/nodes/{node_id}/users/{user_id}/{enable|disable|delete|rotate}
 ```
 
-Node fields are allow-listed by the runner. Unknown JSON fields are ignored by the command mapper and no request is passed to a shell. The mapper covers the 1.14-era Hysteria2 options (Gecko, Chrome QUIC fingerprint switch, BBR profile/debug and Realm binding) and Snell v5/v6 options.
+Node fields are allow-listed by the runner. Unknown JSON fields are ignored by the command mapper and no request is passed to a shell. The mapper covers the 1.14-era Hysteria2 options (Gecko, Chrome QUIC fingerprint switch, BBR profile/debug and Realm binding), Snell v5/v6 options, and the same protocol-specific fields for `PATCH` edits. The underlying `sb-manager node set` path validates and applies these fields transactionally.
 
 Realm enable arguments are structured and validated before task creation:
 
@@ -134,8 +134,9 @@ On controller restart, tasks left in `running` are requeued as `pending`.
 
 ## Roles
 
-The built-in `admin` account can manage users and all operations. `operator`
-can execute server/node tasks but cannot enroll servers or manage accounts.
+The installer creates a random username with the `admin` role and a random
+password. An `admin` role can manage users and all operations. `operator` can
+execute server/node tasks but cannot enroll servers or manage accounts;
 `viewer` can read status, capabilities, tasks and audit data only.
 
 ## Enrollment
@@ -144,7 +145,10 @@ can execute server/node tasks but cannot enroll servers or manage accounts.
 POST /api/v1/enrollment
 ```
 
-Returns the raw token once, its expiry, and a complete `sb-web join` command. Only a SHA-256 hash is stored.
+Returns the raw token once, its expiry, and a complete one-command installer
+(`curl ... install.sh --agent ...`). Only a SHA-256 hash is stored. The
+installer performs registration and starts the Agent service; no second manual
+step is required.
 
 ## Agent endpoints
 

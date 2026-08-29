@@ -14,16 +14,21 @@ SERVICE_USER=${SBM_WEB_SERVICE_USER:-sbweb}
 VERSION=${SBM_WEB_VERSION:-latest}
 REPO=${SBM_WEB_REPO:-R1ddle1337/sb-manager-web}
 NO_START=0
+AGENT_CONTROLLER=''
+AGENT_TOKEN=''
 
 usage() {
   cat <<'EOF'
 用法：sudo ./install.sh [--version VERSION] [--no-start]
+      sudo ./install.sh --agent CONTROLLER_URL ENROLLMENT_TOKEN
 
 环境变量：
   SBM_WEB_BINARY_URL       直接指定二进制地址
   SBM_WEB_CHECKSUM_URL     SHA256SUMS 地址
   SBM_WEB_SKIP_VERIFY=1    跳过摘要校验（仅开发环境）
   SBM_WEB_PREFIX/LIB/ETC/VAR/LOG  覆盖安装路径
+
+--agent 会安装二进制、完成一次性注册并只启动 Agent 服务。
 EOF
 }
 
@@ -31,6 +36,7 @@ while (($#)); do
   case "$1" in
     --version) VERSION=${2:?}; shift 2;;
     --no-start) NO_START=1; shift;;
+    --agent) AGENT_CONTROLLER=${2:?}; AGENT_TOKEN=${3:?}; shift 3;;
     -h|--help) usage; exit 0;;
     *) echo "未知参数：$1" >&2; usage; exit 2;;
   esac
@@ -118,7 +124,9 @@ if [[ ! -e "$ETC_DIR/config.json" ]]; then
   "tasks": {"default_timeout": "10m", "batch_concurrency": 1, "failure_stop_percent": 25}
 }
 EOF_CONFIG
-  "$BIN_DIR/sb-web" init --config "$ETC_DIR/config.json"
+  if [[ -z "$AGENT_CONTROLLER" ]]; then
+    "$BIN_DIR/sb-web" init --config "$ETC_DIR/config.json"
+  fi
 fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$ETC_DIR" "$VAR_DIR" "$LOG_DIR" 2>/dev/null || true
 chmod 0750 "$ETC_DIR" "$VAR_DIR" "$LOG_DIR"
@@ -240,7 +248,9 @@ depend() { need net; }
 EOF_AGENT_OPENRC
 fi
 if [[ "$NO_START" == 0 ]]; then
-  if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
+  if [[ -n "$AGENT_CONTROLLER" ]]; then
+    "$BIN_DIR/sb-web" join "$AGENT_CONTROLLER" "$AGENT_TOKEN" --config "$ETC_DIR/config.json"
+  elif [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
     systemctl enable --now sb-manager-web-helper.service sb-manager-web.service
   elif command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then

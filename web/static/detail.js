@@ -34,16 +34,70 @@
     const metadata = value.metadata || {};
     for (const field of ['remark', 'region', 'purpose', 'line']) if ($(field)) $(field).value = metadata[field] || '';
     if ($('tags')) $('tags').value = Array.isArray(metadata.tags) ? metadata.tags.join(',') : '';
+    const fieldValues = {
+      method: value.method,
+      path: value.ws_path,
+      network: value.network,
+      obfs: value.protocol === 'snell' ? value.obfs_mode : value.obfs?.type,
+      obfs_host: value.obfs_host,
+      obfs_min_packet_size: value.obfs?.min_packet_size,
+      obfs_max_packet_size: value.obfs?.max_packet_size,
+      bbr_profile: value.bbr_profile,
+      masquerade: value.masquerade,
+      security: value.security,
+      flow: value.flow,
+      handshake_server: value.handshake_server,
+      handshake_port: value.handshake_port,
+      congestion_control: value.congestion_control || value.quic_congestion_control,
+      strict_mode: value.strict_mode == null ? '' : String(value.strict_mode),
+      wildcard_sni: value.wildcard_sni,
+      snell_version: value.snell_version == null ? '' : String(value.snell_version),
+      snell_mode: value.snell_mode,
+      realm_id: value.realm_id,
+      realm_ip_version: value.realm_ip_version == null ? '' : String(value.realm_ip_version)
+    };
+    for (const [name, fieldValue] of Object.entries(fieldValues)) {
+      const field = eventField(name);
+      if (field && fieldValue != null) field.value = fieldValue;
+    }
+    for (const name of ['disable_chrome_parrot', 'brutal_debug', 'realm_port_mapping']) {
+      const field = eventField(name);
+      if (field) field.checked = value[name] === true;
+    }
+    configureProtocolFields(value.protocol);
     $('node-output').textContent = JSON.stringify(value, null, 2);
     $('server-link').href = `/servers/${server}`;
     $('share-link').href = `/api/v1/servers/${server}/nodes/${encodeURIComponent(window.SB_NODE_ID)}/share`;
+  }
+  function eventField(name) { return document.querySelector(`#node-edit-form [name="${name}"]`); }
+  function configureProtocolFields(protocol) {
+    const byProtocol = {
+      'vmess-ws-cf': ['path'],
+      shadowsocks: ['method', 'network'],
+      hysteria2: ['obfs', 'obfs_min_packet_size', 'obfs_max_packet_size', 'bbr_profile', 'masquerade', 'disable_chrome_parrot', 'brutal_debug', 'realm_id', 'realm_ip_version', 'realm_port_mapping'],
+      vless: ['security', 'flow', 'handshake_server', 'handshake_port'],
+      tuic: ['congestion_control'],
+      naive: ['network', 'congestion_control'],
+      shadowtls: ['handshake_server', 'handshake_port', 'strict_mode', 'wildcard_sni'],
+      snell: ['obfs', 'obfs_host', 'snell_version', 'snell_mode']
+    };
+    const active = new Set(byProtocol[protocol] || []);
+    document.querySelectorAll('.protocol-options [name]').forEach((field) => {
+      field.disabled = !active.has(field.name);
+      const container = field.closest('label');
+      if (container) container.hidden = field.disabled;
+    });
   }
   $('refresh')?.addEventListener('click', () => loadServer().catch((error) => show(error.message)));
   $('node-edit-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = new FormData(event.target);
     const args = {};
-    for (const [key, value] of form.entries()) if (value !== '') args[key] = key === 'port' ? Number(value) : value;
+    for (const field of event.target.elements) {
+      if (!field.name || field.disabled) continue;
+      if (field.type === 'checkbox') args[field.name] = field.checked;
+      else if (field.value !== '') args[field.name] = field.type === 'number' ? Number(field.value) : field.value;
+    }
     const button = event.target.querySelector('button[type="submit"]');
     button.disabled = true;
     try {

@@ -8,6 +8,7 @@
 
 - Go 静态 WebUI，页面资源嵌入二进制
 - 登录、Argon2id 密码、Session、CSRF
+- 首次安装随机管理员用户名和随机密码（不使用固定 `admin` 账号名）
 - 本机 `sb` CLI 安全调用和命令白名单
 - 状态、节点、核心能力、BBR、Hysteria2 UDP 缓冲区查看
 - 协议节点创建覆盖 VMess、Shadowsocks、AnyTLS、Hysteria2、Trojan、TUIC、VLESS、NaiveProxy、ShadowTLS、Snell v5/v6；含 1.14 Gecko/指纹/BBR profile 及 Hysteria Realm 参数
@@ -70,7 +71,7 @@ SBM_WEB_BINARY_URL=/path/to/sb-web SBM_WEB_SKIP_VERIFY=1 sudo -E bash install.sh
 控制端登录后创建一次性 enrollment token，然后在新服务器执行：
 
 ```bash
-sb-web join https://panel.example.com TOKEN
+curl -fsSL https://github.com/R1ddle1337/sb-manager-web/raw/main/install.sh | sudo bash -s -- --agent https://panel.example.com TOKEN
 ```
 
-Agent 主动连接控制端，不需要开放远程 SSH 管理端口。长期身份由每台服务器独立 Ed25519 私钥提供，私钥保存在本机。
+面板生成的命令会包含确切 Release 安装参数；Agent 主动连接控制端，不需要开放远程 SSH 管理端口。长期身份由每台服务器独立 Ed25519 私钥提供，私钥保存在本机。也可以先安装后手动执行 `sb-web join`。

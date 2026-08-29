@@ -17,6 +17,11 @@ import (
 
 type Manager struct{ store *storage.Store }
 
+type InitialCredential struct {
+	Username string
+	Password string
+}
+
 func New(store *storage.Store) *Manager { return &Manager{store: store} }
 
 func randomBytes(n int) ([]byte, error) {
@@ -60,21 +65,26 @@ func VerifyPassword(encoded, password string) bool {
 	return subtle.ConstantTimeCompare(actual, expected) == 1
 }
 
-func (m *Manager) EnsureAdmin() (string, bool, error) {
+func (m *Manager) EnsureOwner() (InitialCredential, bool, error) {
 	has, err := m.store.HasUsers()
 	if err != nil || has {
-		return "", false, err
+		return InitialCredential{}, false, err
 	}
+	usernameToken, err := RandomToken(6)
+	if err != nil {
+		return InitialCredential{}, false, err
+	}
+	username := "owner-" + strings.ToLower(usernameToken)
 	password, err := RandomToken(18)
 	if err != nil {
-		return "", false, err
+		return InitialCredential{}, false, err
 	}
 	hash, err := HashPassword(password)
 	if err != nil {
-		return "", false, err
+		return InitialCredential{}, false, err
 	}
-	err = m.store.PutUser(types.User{Username: "admin", Hash: hash, Created: time.Now().UTC(), Role: "admin"})
-	return password, true, err
+	err = m.store.PutUser(types.User{Username: username, Hash: hash, Created: time.Now().UTC(), Role: "admin"})
+	return InitialCredential{Username: username, Password: password}, true, err
 }
 
 func (m *Manager) CreateUser(username, password, role string) error {
@@ -116,6 +126,19 @@ func (m *Manager) SetRole(username, role string) error {
 	}
 	user.Role = role
 	return m.store.PutUser(user)
+}
+
+func (m *Manager) AdminUsername() (string, error) {
+	users, err := m.store.ListUsers()
+	if err != nil {
+		return "", err
+	}
+	for _, user := range users {
+		if m.Role(user.Username) == "admin" {
+			return user.Username, nil
+		}
+	}
+	return "", errors.New("no administrator account exists")
 }
 
 func validUsername(username string) bool {

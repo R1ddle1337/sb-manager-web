@@ -56,7 +56,7 @@ func TestLoginStatusAndAction(t *testing.T) {
 	defer server.Close()
 	client := server.Client()
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
-	form := url.Values{"username": {"admin"}, "password": {initial}}
+	form := url.Values{"username": {initial.Username}, "password": {initial.Password}}
 	login, err := client.PostForm(server.URL+"/login", form)
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +158,22 @@ func TestLoginStatusAndAction(t *testing.T) {
 	deleteResponse.Body.Close()
 	if deleteResponse.StatusCode != http.StatusOK {
 		t.Fatalf("user delete status: %d", deleteResponse.StatusCode)
+	}
+	enrollmentRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/enrollment", strings.NewReader("{}"))
+	enrollmentRequest.Header.Set("Content-Type", "application/json")
+	enrollmentRequest.Header.Set("X-CSRF-Token", csrf)
+	enrollmentResponse, err := client.Do(enrollmentRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var enrollment map[string]any
+	if err := json.NewDecoder(enrollmentResponse.Body).Decode(&enrollment); err != nil {
+		t.Fatal(err)
+	}
+	enrollmentResponse.Body.Close()
+	command, _ := enrollment["join_command"].(string)
+	if enrollmentResponse.StatusCode != http.StatusCreated || !strings.Contains(command, "install.sh") || !strings.Contains(command, "--agent") {
+		t.Fatalf("enrollment command is not one-step: %d %q", enrollmentResponse.StatusCode, command)
 	}
 }
 

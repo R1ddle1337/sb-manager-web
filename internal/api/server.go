@@ -54,25 +54,25 @@ type loginAttempt struct {
 	BlockedUntil time.Time
 }
 
-func New(cfg config.Config, store *storage.Store) (*Server, string, error) {
+func New(cfg config.Config, store *storage.Store) (*Server, auth.InitialCredential, error) {
 	authManager := auth.New(store)
-	password, created, err := authManager.EnsureAdmin()
+	credential, created, err := authManager.EnsureOwner()
 	if err != nil {
-		return nil, "", err
+		return nil, auth.InitialCredential{}, err
 	}
 	if err := store.PutServer(types.Server{ID: types.ServerLocal, Name: "本机", Online: true, LastSeen: time.Now().UTC()}); err != nil {
-		return nil, "", err
+		return nil, auth.InitialCredential{}, err
 	}
 	if !created {
-		password = ""
+		credential = auth.InitialCredential{}
 	}
 	server := &Server{cfg: cfg, store: store, auth: authManager, runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}, sem: make(chan struct{}, cfg.Tasks.Concurrency), logins: make(map[string]loginAttempt)}
 	if cfg.TLS.RequireAgentMTLS || cfg.TLS.ClientCAFile != "" || cfg.TLS.ClientCAKeyFile != "" {
 		if err := server.ensureAgentCA(); err != nil {
-			return nil, "", err
+			return nil, auth.InitialCredential{}, err
 		}
 	}
-	return server, password, nil
+	return server, credential, nil
 }
 
 func (s *Server) Handler() http.Handler {
@@ -582,10 +582,6 @@ func (s *Server) usersAPI(w http.ResponseWriter, r *http.Request, session types.
 			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "role 必填", nil)
 			return
 		}
-		if username == "admin" && request.Role != "admin" {
-			writeError(w, http.StatusConflict, "LAST_ADMIN_REQUIRED", "内置 admin 必须保留管理员权限", nil)
-			return
-		}
 		if request.Role != "admin" && s.auth.Role(username) == "admin" {
 			users, listErr := s.store.ListUsers()
 			admins := 0
@@ -606,13 +602,26 @@ func (s *Server) usersAPI(w http.ResponseWriter, r *http.Request, session types.
 		s.recordAudit(session.Username, "user.role", nil, nil, "accepted")
 		writeJSON(w, http.StatusOK, map[string]any{"username": username, "role": request.Role})
 	case http.MethodDelete:
-		if username == "admin" || username == session.Username {
-			writeError(w, http.StatusConflict, "USER_PROTECTED", "不能删除内置 admin 或当前登录用户", nil)
+		if username == session.Username {
+			writeError(w, http.StatusConflict, "USER_PROTECTED", "不能删除当前登录用户", nil)
 			return
 		}
 		if _, err := s.store.GetUser(username); err != nil {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "用户不存在", nil)
 			return
+		}
+		if s.auth.Role(username) == "admin" {
+			users, listErr := s.store.ListUsers()
+			admins := 0
+			for _, user := range users {
+				if s.auth.Role(user.Username) == "admin" {
+					admins++
+				}
+			}
+			if listErr != nil || admins <= 1 {
+				writeError(w, http.StatusConflict, "LAST_ADMIN_REQUIRED", "至少需要保留一个管理员", nil)
+				return
+			}
 		}
 		if err := s.store.DeleteUser(username); err != nil {
 			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
@@ -690,14 +699,19 @@ func (s *Server) enrollment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	baseURL := "http://" + r.Host
-	if r.TLS != nil {
+	if r.TLS != nil || strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0]), "https") {
 		baseURL = "https://" + r.Host
 	}
+	installURL := "https://github.com/R1ddle1337/sb-manager-web/raw/main/install.sh"
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"expires_at":   expires,
 		"token":        token,
-		"join_command": fmt.Sprintf("sb-web join %s %s", baseURL, token),
+		"join_command": fmt.Sprintf("curl -fsSL %s | sudo bash -s -- --agent %s %s", shellQuote(installURL), shellQuote(baseURL), shellQuote(token)),
 	})
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 type actionRequest struct {
@@ -761,7 +775,11 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "服务器不存在", nil)
 			return
 		}
-		writeJSON(w, http.StatusOK, server.Status)
+		if server.NodeSnapshot != nil {
+			writeJSON(w, http.StatusOK, server.NodeSnapshot)
+		} else {
+			writeJSON(w, http.StatusOK, server.Status)
+		}
 		return
 	}
 	if len(parts) == 6 && parts[4] == "nodes" && r.Method == http.MethodPatch {
@@ -776,11 +794,25 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 6 && parts[4] == "nodes" && r.Method == http.MethodGet {
-		if serverID != types.ServerLocal {
-			writeError(w, http.StatusConflict, "AGENT_ASYNC_ONLY", "远程节点详情请通过任务获取", nil)
+		if serverID == types.ServerLocal {
+			s.jsonAction(w, r, "node.show", map[string]any{"id": parts[5]})
 			return
 		}
-		s.jsonAction(w, r, "node.show", map[string]any{"id": parts[5]})
+		server, err := s.store.GetServer(serverID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "服务器不存在", nil)
+			return
+		}
+		snapshot := server.NodeSnapshot
+		if snapshot == nil {
+			snapshot = server.Status
+		}
+		node, ok := cachedNode(snapshot, parts[5])
+		if !ok {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "远程状态快照中没有该节点", nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, node)
 		return
 	}
 	if len(parts) == 7 && parts[4] == "nodes" && parts[6] == "share" && r.Method == http.MethodGet {
@@ -927,6 +959,25 @@ func expectedDigest(server types.Server) string {
 		return ""
 	}
 	return server.StateDigest
+}
+
+func cachedNode(status any, id string) (map[string]any, bool) {
+	var nodes []any
+	switch value := status.(type) {
+	case []any:
+		nodes = value
+	case map[string]any:
+		if value, ok := value["nodes"].([]any); ok {
+			nodes = value
+		}
+	}
+	for _, item := range nodes {
+		node, ok := item.(map[string]any)
+		if ok && fmt.Sprint(node["id"]) == id {
+			return node, true
+		}
+	}
+	return nil, false
 }
 
 func (s *Server) executeLocal(task types.Task) {
@@ -1117,6 +1168,7 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
 			Backend          string `json:"backend"`
 			Status           any    `json:"status"`
 			Capabilities     any    `json:"capabilities"`
+			NodeSnapshot     any    `json:"node_snapshot"`
 			StateDigest      string `json:"state_digest"`
 			StateSchema      int    `json:"state_schema"`
 		}
@@ -1125,7 +1177,7 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		server.AgentVersion, server.SBManagerVersion, server.CoreVersion, server.Backend = heartbeat.AgentVersion, heartbeat.SBManagerVersion, heartbeat.CoreVersion, heartbeat.Backend
-		server.Status, server.Capabilities, server.StateDigest, server.StateSchema, server.Online, server.LastSeen = heartbeat.Status, heartbeat.Capabilities, heartbeat.StateDigest, heartbeat.StateSchema, true, time.Now().UTC()
+		server.Status, server.Capabilities, server.NodeSnapshot, server.StateDigest, server.StateSchema, server.Online, server.LastSeen = heartbeat.Status, heartbeat.Capabilities, heartbeat.NodeSnapshot, heartbeat.StateDigest, heartbeat.StateSchema, true, time.Now().UTC()
 		if err := s.store.PutServer(server); err != nil {
 			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 			return

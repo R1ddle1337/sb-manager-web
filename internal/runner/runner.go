@@ -300,7 +300,15 @@ func nodeSetCommand(args map[string]any) ([]string, error) {
 		return nil, errors.New("invalid node id")
 	}
 	command := []string{"node", "set", id}
-	for _, field := range []struct{ key, flag string }{{"name", "--name"}, {"address", "--address"}, {"domain", "--domain"}, {"path", "--path"}, {"remark", "--remark"}, {"region", "--region"}, {"purpose", "--purpose"}, {"line", "--line"}, {"tags", "--tags"}} {
+	for _, field := range []struct{ key, flag string }{
+		{"name", "--name"}, {"address", "--address"}, {"domain", "--domain"}, {"path", "--path"},
+		{"remark", "--remark"}, {"region", "--region"}, {"purpose", "--purpose"}, {"line", "--line"}, {"tags", "--tags"},
+		{"method", "--method"}, {"network", "--network"}, {"obfs", "--obfs"}, {"obfs_host", "--obfs-host"},
+		{"bbr_profile", "--bbr-profile"}, {"masquerade", "--masquerade"}, {"security", "--security"}, {"flow", "--flow"},
+		{"handshake_server", "--handshake-server"}, {"congestion_control", "--congestion-control"}, {"strict_mode", "--strict-mode"},
+		{"wildcard_sni", "--wildcard-sni"}, {"snell_version", "--snell-version"}, {"snell_mode", "--snell-mode"},
+		{"realm_id", "--realm-id"}, {"realm_ip_version", "--realm-ip-version"},
+	} {
 		if value, ok := args[field.key].(string); ok {
 			if len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") {
 				return nil, errors.New("invalid node value")
@@ -308,11 +316,32 @@ func nodeSetCommand(args map[string]any) ([]string, error) {
 			command = append(command, field.flag, value)
 		}
 	}
-	if port, ok := args["port"].(float64); ok {
-		if port < 1 || port > 65535 || port != float64(int(port)) {
-			return nil, errors.New("invalid node port")
+	for _, field := range []struct{ key, flag string }{
+		{"port", "--port"}, {"obfs_min_packet_size", "--obfs-min-packet-size"},
+		{"obfs_max_packet_size", "--obfs-max-packet-size"}, {"handshake_port", "--handshake-port"},
+	} {
+		if value, ok := args[field.key].(float64); ok {
+			if value < 1 || value > 65535 || value != float64(int(value)) {
+				return nil, fmt.Errorf("invalid %s", strings.ReplaceAll(field.key, "_", " "))
+			}
+			command = append(command, field.flag, fmt.Sprintf("%d", int(value)))
 		}
-		command = append(command, "--port", fmt.Sprintf("%d", int(port)))
+	}
+	for _, field := range []struct{ key, yes, no string }{
+		{"disable_chrome_parrot", "--disable-chrome-parrot", "--enable-chrome-parrot"},
+		{"brutal_debug", "--brutal-debug", "--no-brutal-debug"},
+		{"realm_port_mapping", "--realm-port-mapping", "--no-realm-port-mapping"},
+	} {
+		if value, ok := args[field.key].(bool); ok {
+			if value {
+				command = append(command, field.yes)
+			} else {
+				command = append(command, field.no)
+			}
+		}
+	}
+	if clear, ok := args["clear_realm"].(bool); ok && clear {
+		command = append(command, "--clear-realm")
 	}
 	if len(command) == 3 {
 		return nil, errors.New("node.set requires at least one field")

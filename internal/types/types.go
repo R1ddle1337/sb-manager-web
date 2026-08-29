@@ -26,6 +26,7 @@ type Server struct {
 	LastSeen           time.Time `json:"last_seen,omitempty"`
 	Status             any       `json:"status,omitempty"`
 	Capabilities       any       `json:"capabilities,omitempty"`
+	NodeSnapshot       any       `json:"node_snapshot,omitempty"`
 	AgentPublicKey     string    `json:"agent_public_key,omitempty"`
 	AgentIdentityState string    `json:"agent_identity_state,omitempty"`
 	StateDigest        string    `json:"state_digest,omitempty"`

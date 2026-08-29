@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -44,4 +45,24 @@ func TestPasswordAndSession(t *testing.T) {
 		t.Fatal("operator password update failed")
 	}
 	_ = time.Now()
+}
+
+func TestEnsureOwnerUsesRandomUsername(t *testing.T) {
+	store, err := storage.Open(t.TempDir() + "/web.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager := New(store)
+	credential, created, err := manager.EnsureOwner()
+	if err != nil || !created {
+		t.Fatalf("owner creation failed: %#v %v", credential, err)
+	}
+	if !strings.HasPrefix(credential.Username, "owner-") || credential.Username == "admin" || len(credential.Password) < 12 {
+		t.Fatalf("credentials were not randomized: %#v", credential)
+	}
+	second, created, err := manager.EnsureOwner()
+	if err != nil || created || second.Username != "" {
+		t.Fatalf("owner was created twice: %#v created=%v err=%v", second, created, err)
+	}
 }

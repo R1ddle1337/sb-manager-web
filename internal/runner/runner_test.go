@@ -60,6 +60,30 @@ func TestRealmEnableCommandValidation(t *testing.T) {
 	}
 }
 
+func TestNodeSetCommandIncludesProtocolFields(t *testing.T) {
+	args, err := ActionCommand("node.set", map[string]any{
+		"id":                    "hy2-edit",
+		"obfs":                  "gecko",
+		"obfs_min_packet_size":  float64(600),
+		"obfs_max_packet_size":  float64(1100),
+		"disable_chrome_parrot": false,
+		"bbr_profile":           "standard",
+		"brutal_debug":          true,
+		"realm_id":              "slot2",
+		"realm_ip_version":      "6",
+		"realm_port_mapping":    false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(args, " ")
+	for _, expected := range []string{"--obfs gecko", "--obfs-min-packet-size 600", "--obfs-max-packet-size 1100", "--enable-chrome-parrot", "--bbr-profile standard", "--brutal-debug", "--realm-id slot2", "--realm-ip-version 6", "--no-realm-port-mapping"} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("node set missing %q: %s", expected, got)
+		}
+	}
+}
+
 func TestRunnerTimeout(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-sb")

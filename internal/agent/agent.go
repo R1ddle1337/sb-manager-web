@@ -306,6 +306,7 @@ func hostname() string {
 func (a *Agent) heartbeat(ctx context.Context) error {
 	status, _ := a.localJSON(ctx, "status")
 	caps, _ := a.localJSON(ctx, "core.capabilities")
+	nodes, _ := a.localJSON(ctx, "nodes.list")
 	managerResult, _ := a.runner.Run(ctx, "version")
 	body := map[string]any{
 		"agent_version":      Version,
@@ -314,6 +315,7 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 		"backend":            "",
 		"status":             status,
 		"capabilities":       caps,
+		"node_snapshot":      nodes,
 	}
 	if digest, schema, digestErr := stateSnapshot(a.cfg.StateFile); digestErr == nil {
 		body["state_digest"], body["state_schema"] = digest, schema
