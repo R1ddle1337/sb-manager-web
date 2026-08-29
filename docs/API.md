@@ -78,6 +78,7 @@ Supported system actions include status/capabilities reads plus:
 - `config.validate`, `config.diff`, `firewall.status`, `firewall.ports`, `firewall.ufw-allow`
 - `mux.status`, `mux.enable`, `mux.disable`, `mux.route.*`, `tunnel.*`, `notify.*`, `settings.*`
 - `core.check`, `core.update`, `core.rollback`
+- `core.policy`, `core.auto`
 - `backup.create`
 - `health.check`
 - `doctor`, `doctor.repair-safe`

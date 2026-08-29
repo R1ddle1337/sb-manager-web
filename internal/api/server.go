@@ -365,8 +365,14 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.singleJSONAction(w, r, "firewall.ports")
 	case "/api/v1/mux":
 		s.singleJSONAction(w, r, "mux.status")
+	case "/api/v1/mux/routes":
+		s.singleJSONAction(w, r, "mux.route.list")
 	case "/api/v1/tunnel":
 		s.singleJSONAction(w, r, "tunnel.status")
+	case "/api/v1/tunnel/configure":
+		s.tunnelConfigure(w, r, session)
+	case "/api/v1/tunnel/token":
+		s.tunnelToken(w, r, session)
 	case "/api/v1/notify":
 		s.singleJSONAction(w, r, "notify.status")
 	case "/api/v1/notify/configure":
@@ -675,6 +681,61 @@ func (s *Server) cloudflareConfigure(w http.ResponseWriter, r *http.Request, ses
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": redact(result.Stdout)})
 }
 
+func (s *Server) tunnelConfigure(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		NodeID        string `json:"node_id"`
+		Domain        string `json:"domain"`
+		Token         string `json:"token"`
+		ClientAddress string `json:"client_address"`
+	}
+	if err := decodeBody(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	args := map[string]any{"node_id": request.NodeID, "domain": request.Domain, "token": request.Token, "client_address": request.ClientAddress}
+	if _, err := runner.ActionCommand("tunnel.fixed", args); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	result, runErr := s.runLocal("tunnel.fixed", args)
+	if runErr != nil {
+		writeRunnerError(w, runErr, result)
+		return
+	}
+	s.recordAudit(session.Username, "tunnel.fixed", nil, nil, "success")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": redact(result.Stdout)})
+}
+
+func (s *Server) tunnelToken(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		Token string `json:"token"`
+	}
+	if err := decodeBody(r, &request); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	args := map[string]any{"token": request.Token}
+	if _, err := runner.ActionCommand("tunnel.set-token", args); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	result, runErr := s.runLocal("tunnel.set-token", args)
+	if runErr != nil {
+		writeRunnerError(w, runErr, result)
+		return
+	}
+	s.recordAudit(session.Username, "tunnel.set-token", nil, nil, "success")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": redact(result.Stdout)})
+}
+
 func (s *Server) subscriptionStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
@@ -750,6 +811,10 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Args == nil {
 		request.Args = map[string]any{}
+	}
+	if sensitiveAction(request.Action) {
+		writeError(w, http.StatusBadRequest, "SENSITIVE_ACTION_DIRECT_ONLY", "该操作不支持批量队列，请使用专用接口", nil)
+		return
 	}
 	if request.Strategy == "" {
 		request.Strategy = "all"
@@ -1287,6 +1352,10 @@ func (s *Server) createAction(w http.ResponseWriter, r *http.Request, serverID s
 }
 
 func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request actionRequest) {
+	if sensitiveAction(request.Action) {
+		writeError(w, http.StatusBadRequest, "SENSITIVE_ACTION_DIRECT_ONLY", "该操作必须使用专用接口，避免凭据进入任务队列", nil)
+		return
+	}
 	if _, err := runner.ActionCommand(request.Action, request.Args); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
 		return
@@ -1319,6 +1388,15 @@ func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request a
 	}
 	s.recordAudit("admin", request.Action, []string{serverID}, []string{task.ID}, "accepted")
 	writeJSON(w, http.StatusAccepted, task)
+}
+
+func sensitiveAction(action string) bool {
+	switch action {
+	case "cert.setup-cloudflare", "notify.configure", "tunnel.fixed", "tunnel.set-token", "subscription.revoke":
+		return true
+	default:
+		return false
+	}
 }
 
 func firstNonEmptyString(value any) string {

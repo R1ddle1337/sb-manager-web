@@ -135,6 +135,16 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"core", "update"}, nil
 	case "core.rollback":
 		return []string{"core", "rollback"}, nil
+	case "core.policy":
+		policy, _ := args["policy"].(string)
+		switch policy {
+		case "manual", "notify", "patch", "stable":
+		default:
+			return nil, errors.New("invalid core policy")
+		}
+		return []string{"core", "policy", policy}, nil
+	case "core.auto":
+		return []string{"core", "auto"}, nil
 	case "doctor":
 		return JSONArgs("doctor"), nil
 	case "doctor.repair-safe":
@@ -359,6 +369,33 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"tunnel", "stop"}, nil
 	case "tunnel.refresh":
 		return []string{"tunnel", "refresh"}, nil
+	case "tunnel.fixed":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		domain, _ := args["domain"].(string)
+		if !safeDomain.MatchString(domain) {
+			return nil, errors.New("invalid tunnel domain")
+		}
+		token, _ := args["token"].(string)
+		if len(token) > 4096 || strings.ContainsAny(token, "\r\n\x00") {
+			return nil, errors.New("invalid tunnel token")
+		}
+		command := []string{"tunnel", "fixed", nodeID, domain}
+		if token != "" {
+			command = append(command, token)
+		}
+		if address, _ := args["client_address"].(string); address != "" {
+			command = append(command, address)
+		}
+		return command, nil
+	case "tunnel.set-token":
+		token, _ := args["token"].(string)
+		if token == "" || len(token) > 4096 || strings.ContainsAny(token, "\r\n\x00") {
+			return nil, errors.New("invalid tunnel token")
+		}
+		return []string{"tunnel", "set-token", token}, nil
 	case "notify.status":
 		return JSONArgs("notify", "status"), nil
 	case "notify.test":
