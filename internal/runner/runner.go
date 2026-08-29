@@ -308,6 +308,31 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"mux", "enable", fmt.Sprintf("%d", int(port))}, nil
 	case "mux.disable":
 		return []string{"mux", "disable"}, nil
+	case "mux.route.list":
+		return JSONArgs("mux", "route", "list"), nil
+	case "mux.route.add":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		sni, _ := args["sni"].(string)
+		if !safeDomain.MatchString(sni) {
+			return nil, errors.New("invalid SNI")
+		}
+		command := []string{"mux", "route", "add", nodeID, sni}
+		if value, ok := args["backend_port"].(float64); ok {
+			if value < 1 || value > 65535 || value != float64(int(value)) {
+				return nil, errors.New("invalid backend port")
+			}
+			command = append(command, fmt.Sprintf("%d", int(value)))
+		}
+		return command, nil
+	case "mux.route.remove":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		return []string{"mux", "route", "remove", nodeID}, nil
 	case "tunnel.status":
 		return JSONArgs("tunnel", "status"), nil
 	case "tunnel.stop":

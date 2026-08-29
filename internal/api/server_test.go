@@ -98,7 +98,7 @@ func TestLoginStatusAndAction(t *testing.T) {
 	if realmResponse.StatusCode != http.StatusOK || realm["enabled"] != false {
 		t.Fatalf("realm response: %d %#v", realmResponse.StatusCode, realm)
 	}
-	for _, page := range []string{"/", "/servers/local", "/servers/local/nodes/demo", "/settings/users"} {
+	for _, page := range []string{"/", "/servers/local", "/servers/local/nodes/demo", "/settings/users", "/operations"} {
 		pageResponse, pageErr := client.Get(server.URL + page)
 		if pageErr != nil {
 			t.Fatal(pageErr)
