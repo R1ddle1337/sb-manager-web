@@ -118,7 +118,7 @@ if [[ ! -e "$ETC_DIR/config.json" ]]; then
   "data_dir": "$VAR_DIR",
   "database": "$VAR_DIR/web.db",
   "log_dir": "$LOG_DIR",
-  "backup_dir": "/var/lib/sb-manager/backups",
+  "backup_dir": "$VAR_DIR/backups",
   "helper_socket": "/run/sb-manager-web/helper.sock",
   "tls": {"enabled": false, "cert_file": "", "key_file": "", "client_ca_file": "", "client_ca_key_file": "", "require_agent_mtls": false},
   "agent": {"enabled": false, "controller_url": "", "identity_file": "$VAR_DIR/agent-identity/ed25519.json", "heartbeat_interval": "30s"},

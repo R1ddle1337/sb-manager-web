@@ -55,7 +55,7 @@ func Defaults() Config {
 		DataDir:      "/var/lib/sb-manager-web",
 		Database:     "/var/lib/sb-manager-web/web.db",
 		LogDir:       "/var/log/sb-manager-web",
-		BackupDir:    "/var/lib/sb-manager/backups",
+		BackupDir:    "/var/lib/sb-manager-web/backups",
 		HelperSocket: "/run/sb-manager-web/helper.sock",
 		Agent: AgentConfig{
 			IdentityFile:      "/var/lib/sb-manager-web/agent-identity/ed25519.key",

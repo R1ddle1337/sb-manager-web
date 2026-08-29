@@ -179,6 +179,9 @@ The installer creates a random username with the `admin` role and a random
 password. An `admin` role can manage users and all operations. `operator` can
 execute server/node tasks but cannot enroll servers or manage accounts;
 `viewer` can read status, capabilities, tasks and audit data only.
+API Tokens are returned only once at creation. Their `viewer` role is suitable
+for Prometheus-style metrics scraping; tokens are hashed in SQLite and can be
+revoked by an administrator.
 
 ## Enrollment
 

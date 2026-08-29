@@ -26,7 +26,7 @@ hard-coded to `admin`. The credentials are printed once by `sb-web init` or
 - `internal/api`: HTML/API transport, authentication gates, CSRF and Agent endpoints.
 - `internal/runner`: the only mapping from Web actions to `sb` arguments. It never invokes a shell.
 - `internal/agent`: one-time enrollment, Ed25519 identity, heartbeat and task execution.
-- `internal/storage`: SQLite users, sessions, servers, tasks, enrollments and audit events.
+- `internal/storage`: SQLite users, sessions, servers, tasks, enrollments, audit events, API tokens and metric samples.
 - `web`: embedded server-rendered HTML, CSS and JavaScript.
 
 ## Local mode

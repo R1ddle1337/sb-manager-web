@@ -184,6 +184,29 @@ func TestLoginStatusAndAction(t *testing.T) {
 	if enrollmentResponse.StatusCode != http.StatusCreated || !strings.Contains(command, "install.sh") || !strings.Contains(command, "--agent") {
 		t.Fatalf("enrollment command is not one-step: %d %q", enrollmentResponse.StatusCode, command)
 	}
+	tokenRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/tokens", strings.NewReader(`{"name":"metrics","role":"viewer"}`))
+	tokenRequest.Header.Set("Content-Type", "application/json")
+	tokenRequest.Header.Set("X-CSRF-Token", csrf)
+	tokenResponse, err := client.Do(tokenRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tokenValue map[string]any
+	if err := json.NewDecoder(tokenResponse.Body).Decode(&tokenValue); err != nil {
+		t.Fatal(err)
+	}
+	tokenResponse.Body.Close()
+	rawToken, _ := tokenValue["token"].(string)
+	metricsRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/metrics", nil)
+	metricsRequest.Header.Set("Authorization", "Bearer "+rawToken)
+	metricsTokenResponse, err := client.Do(metricsRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsTokenResponse.Body.Close()
+	if metricsTokenResponse.StatusCode != http.StatusOK {
+		t.Fatalf("metrics token status: %d", metricsTokenResponse.StatusCode)
+	}
 }
 
 func mustURL(raw string) *url.URL { value, _ := url.Parse(raw); return value }

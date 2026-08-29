@@ -353,12 +353,16 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if r.Method != http.MethodGet && r.URL.Path != "/api/v1/password" && s.auth.Role(session.Username) == "viewer" {
+	if r.Method != http.MethodGet && r.URL.Path != "/api/v1/password" && !strings.HasPrefix(r.URL.Path, "/api/v1/2fa/") && s.auth.Role(session.Username) == "viewer" {
 		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "当前账号只有只读权限", nil)
 		return
 	}
 	if r.URL.Path == "/api/v1/enrollment" && s.auth.Role(session.Username) != "admin" {
 		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以添加服务器", nil)
+		return
+	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/servers/") && s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以撤销服务器", nil)
 		return
 	}
 	switch r.URL.Path {
