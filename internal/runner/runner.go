@@ -278,6 +278,25 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 			return nil, errors.New("invalid certificate domain")
 		}
 		return JSONArgs("cert", "inspect", domain), nil
+	case "cert.setup-cloudflare":
+		token, _ := args["token"].(string)
+		if token == "" || len(token) > 4096 || strings.ContainsAny(token, "\r\n\x00") {
+			return nil, errors.New("Cloudflare token is required")
+		}
+		command := []string{"cert", "setup-cloudflare", token}
+		if zone, _ := args["zone_id"].(string); zone != "" {
+			if safeArgument(zone, 128) == "" {
+				return nil, errors.New("invalid Cloudflare zone id")
+			}
+			command = append(command, zone)
+		}
+		if email, _ := args["email"].(string); email != "" {
+			if safeArgument(email, 254) == "" {
+				return nil, errors.New("invalid Cloudflare email")
+			}
+			command = append(command, email)
+		}
+		return command, nil
 	case "health.status":
 		return JSONArgs("health", "status"), nil
 	case "health.enable":

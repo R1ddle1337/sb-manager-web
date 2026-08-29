@@ -100,6 +100,7 @@ func TestOperationsCommandMappings(t *testing.T) {
 		{"health.configure", map[string]any{"disk_free": "10"}, "health configure --disk-free 10"},
 		{"mux.route.list", nil, "--json mux route list"},
 		{"notify.configure", map[string]any{"provider": "telegram", "credential_file": "/tmp/credential", "chat_id": "123"}, "notify configure telegram --token-file /tmp/credential --chat-id 123"},
+		{"cert.setup-cloudflare", map[string]any{"token": "cf-token", "zone_id": "zone-id", "email": "ops@example.com"}, "cert setup-cloudflare cf-token zone-id ops@example.com"},
 	}
 	for _, test := range tests {
 		args, err := ActionCommand(test.action, test.args)

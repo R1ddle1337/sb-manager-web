@@ -35,6 +35,7 @@ GET /api/v1/config/validate
 GET /api/v1/config/diff
 GET /api/v1/logs?target=all&lines=200
 GET /api/v1/certificates/{domain}
+POST /api/v1/certificates/cloudflare
 GET /api/v1/metrics
 GET /api/v1/shares
 GET /api/v1/exports/outbounds
@@ -119,6 +120,7 @@ The Realm token is generated and stored by `sb-manager` on the target server. It
 
 ```text
 POST /api/v1/batch/actions
+POST /api/v1/batch/preflight
 GET  /api/v1/tasks
 GET  /api/v1/tasks/{task_id}
 POST /api/v1/tasks/{task_id}/cancel

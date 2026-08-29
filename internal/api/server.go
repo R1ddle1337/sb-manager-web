@@ -381,6 +381,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.metrics(w, r)
 	case "/api/v1/certificates":
 		s.singleJSONAction(w, r, "cert.list")
+	case "/api/v1/certificates/cloudflare":
+		s.cloudflareConfigure(w, r, session)
 	case "/api/v1/logs":
 		s.logs(w, r)
 	case "/api/v1/shares":
@@ -405,6 +407,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.databaseBackup(w, r, session)
 	case "/api/v1/batch/actions":
 		s.batchAction(w, r)
+	case "/api/v1/batch/preflight":
+		s.batchPreflight(w, r)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/api/v1/certificates/") {
 			s.certificateInspect(w, r)
@@ -639,6 +643,38 @@ func (s *Server) notifyConfigure(w http.ResponseWriter, r *http.Request, session
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": redact(result.Stdout)})
 }
 
+func (s *Server) cloudflareConfigure(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		Token  string `json:"token"`
+		ZoneID string `json:"zone_id"`
+		Email  string `json:"email"`
+	}
+	if err := decodeBody(r, &request); err != nil || request.Token == "" || request.Email == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "token 和 email 必填", nil)
+		return
+	}
+	if len(request.Token) > 4096 || strings.ContainsAny(request.Token, "\r\n\x00") {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "token 无效", nil)
+		return
+	}
+	args := map[string]any{"token": request.Token, "zone_id": request.ZoneID, "email": request.Email}
+	if _, err := runner.ActionCommand("cert.setup-cloudflare", args); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	result, runErr := s.runLocal("cert.setup-cloudflare", args)
+	if runErr != nil {
+		writeRunnerError(w, runErr, result)
+		return
+	}
+	s.recordAudit(session.Username, "cert.setup-cloudflare", nil, nil, "success")
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": redact(result.Stdout)})
+}
+
 func (s *Server) subscriptionStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
@@ -783,6 +819,57 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordAudit("admin", request.Action, request.ServerIDs, taskIDs, "accepted")
 	writeJSON(w, http.StatusAccepted, map[string]any{"batch_id": "batch_" + batchID, "strategy": request.Strategy, "percentage": request.Percent, "tasks": created})
+}
+
+func (s *Server) batchPreflight(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		ServerIDs []string       `json:"server_ids"`
+		Action    string         `json:"action"`
+		Args      map[string]any `json:"args"`
+	}
+	if err := decodeBody(r, &request); err != nil || len(request.ServerIDs) == 0 || len(request.ServerIDs) > 100 {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "server_ids 必须包含 1-100 台服务器", nil)
+		return
+	}
+	if request.Args == nil {
+		request.Args = map[string]any{}
+	}
+	if _, err := runner.ActionCommand(request.Action, request.Args); err != nil {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+		return
+	}
+	type candidate struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Online      bool   `json:"online"`
+		StateDigest string `json:"state_digest,omitempty"`
+		CoreVersion string `json:"core_version,omitempty"`
+		Reason      string `json:"reason,omitempty"`
+	}
+	result := struct {
+		Action   string      `json:"action"`
+		Eligible []candidate `json:"eligible"`
+		Skipped  []candidate `json:"skipped"`
+	}{Action: request.Action, Eligible: []candidate{}, Skipped: []candidate{}}
+	for _, id := range request.ServerIDs {
+		server, err := s.store.GetServer(id)
+		if err != nil {
+			result.Skipped = append(result.Skipped, candidate{ID: id, Reason: "server not found"})
+			continue
+		}
+		item := candidate{ID: server.ID, Name: server.Name, Online: server.Online, StateDigest: server.StateDigest, CoreVersion: server.CoreVersion}
+		if server.ID != types.ServerLocal && !server.Online {
+			item.Reason = "offline"
+			result.Skipped = append(result.Skipped, item)
+		} else {
+			result.Eligible = append(result.Eligible, item)
+		}
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {

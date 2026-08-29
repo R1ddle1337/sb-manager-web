@@ -35,10 +35,11 @@
   $('settings-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.target); try { await action('settings.outbound-ip', { strategy: form.get('strategy') }); if (form.get('address')) await action('settings.address', { address: form.get('address') }); if (form.get('dns_value')) await action('settings.dns', { kind: form.get('dns_kind'), value: form.get('dns_value') }); } catch (error) { notice(error.message); } });
   const certificates = document.createElement('article');
   certificates.className = 'panel';
-  certificates.innerHTML = '<div class="panel-header"><div><p class="eyebrow">CERTIFICATES</p><h2>证书状态</h2></div><button class="secondary-button" id="cert-refresh">刷新</button></div><div class="operation-actions"><button class="primary-button" data-action="cert.renew">续签全部证书</button></div><pre id="cert-output" class="output">读取中…</pre>';
+  certificates.innerHTML = '<div class="panel-header"><div><p class="eyebrow">CERTIFICATES</p><h2>证书状态</h2></div><button class="secondary-button" id="cert-refresh">刷新</button></div><div class="operation-actions"><button class="primary-button" data-action="cert.renew">续签全部证书</button></div><form id="cloudflare-form" class="inline-form"><input name="token" type="password" placeholder="Cloudflare API Token" required><input name="zone_id" placeholder="Zone ID（可选）"><input name="email" type="email" placeholder="ACME 邮箱" required><button class="secondary-button" type="submit">配置 DNS-01</button></form><pre id="cert-output" class="output">读取中…</pre>';
   document.querySelector('.operations-grid').appendChild(certificates);
   $('cert-refresh').addEventListener('click', async () => { try { const result = await json('/api/v1/certificates'); $('cert-output').textContent = JSON.stringify(result, null, 2); } catch (error) { notice(error.message); } });
   certificates.querySelector('[data-action]').addEventListener('click', () => action('cert.renew'));
+  $('cloudflare-form').addEventListener('submit', async (event) => { event.preventDefault(); if (!window.confirm('确认保存 Cloudflare DNS-01 凭据到本机？')) return; try { await json('/api/v1/certificates/cloudflare', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify(Object.fromEntries(new FormData(event.target).entries())) }); event.target.reset(); notice('Cloudflare DNS-01 已配置，凭据不会写入任务记录。', true); } catch (error) { notice(error.message); } });
   $('cert-refresh').click();
   read('health'); read('firewall'); read('traffic');
 })();
