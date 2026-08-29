@@ -7,7 +7,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X github.com/R1ddle1337/sb-manager-
 all: test build
 
 fmt:
-	gofmt -w cmd internal web
+	gofmt -w cmd internal tests web
 
 test:
 	CGO_ENABLED=0 $(GO) test ./...
