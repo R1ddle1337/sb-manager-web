@@ -3,92 +3,45 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>sb-manager-web</title>
+  <meta name="theme-color" content="#0b1220">
+  <title>sb-manager · 控制中心</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <div><strong>sb-manager-web</strong><span class="muted">控制面板</span></div>
-    <form method="post" action="/logout"><button class="secondary" type="submit">退出</button></form>
-  </header>
-  <main class="layout">
-    <section class="hero">
-      <div><h1>服务器概览</h1><p class="muted">WebUI 只调用本地 sb-manager，不直接编辑生成配置。</p></div>
-      <button id="refresh" class="secondary">刷新</button>
-    </section>
-    <section id="alerts"></section>
-    <section class="grid" id="summary">
-      <article class="card stat"><span>服务</span><strong id="service-state">读取中…</strong></article>
-      <article class="card stat"><span>节点</span><strong id="node-count">读取中…</strong></article>
-      <article class="card stat"><span>BBR</span><strong id="bbr-state">读取中…</strong></article>
-      <article class="card stat"><span>HY2 UDP</span><strong id="hy2-state">读取中…</strong></article>
-    </section>
-    <section class="card">
-      <div class="section-title"><h2>本机状态</h2><code id="core-version">核心：读取中…</code></div>
-      <pre id="status-output" class="output">读取中…</pre>
-    </section>
-    <section class="card">
-      <div class="section-title"><h2>服务器</h2><button id="add-server" class="secondary">生成加入命令</button></div>
-      <div id="servers" class="table-wrap">读取中…</div>
-      <form id="batch-form" class="inline-form">
-        <select name="action"><option value="bbr.enable">批量开启 BBR</option><option value="hy2-buffer.enable">批量开启 HY2 UDP</option><option value="core.update">批量更新核心</option><option value="backup.create">批量备份</option><option value="health.check">批量健康检查</option></select>
-        <button type="submit">对选中服务器执行</button>
-      </form>
-      <pre id="join-command" class="output" hidden></pre>
-    </section>
-    <section class="card">
-      <div class="section-title"><h2>快捷操作</h2><span class="muted">操作会创建任务并由 sb-manager 执行</span></div>
-      <div class="actions">
-        <button data-action="bbr.enable">开启 BBR</button>
-        <button data-action="bbr.disable" class="secondary">恢复 BBR</button>
-        <button data-action="hy2-buffer.enable">开启 HY2 UDP 16 MiB</button>
-        <button data-action="hy2-buffer.disable" class="secondary">恢复 HY2 UDP</button>
-        <button data-action="core.update" class="secondary">更新 sing-box</button>
-        <button data-action="backup.create" class="secondary">创建备份</button>
-        <button data-action="health.check" class="secondary">健康检查</button>
-        <button data-action="doctor.repair-safe" class="secondary">安全修复</button>
-      </div>
-    </section>
-    <section class="card">
-      <div class="section-title"><h2>节点</h2><a href="/api/v1/nodes" target="_blank">打开 JSON</a></div>
-      <form id="add-node-form" class="inline-form">
-        <input name="id" placeholder="节点 ID" pattern="[a-z0-9][a-z0-9._-]{0,47}" required>
-        <select name="protocol"><option value="ss">Shadowsocks 2022</option><option value="hy2">Hysteria2</option><option value="vmess">VMess</option></select>
-        <input name="port" type="number" min="1" max="65535" placeholder="端口" required>
-        <input name="domain" placeholder="域名（TLS/HY2）">
-        <input name="address" placeholder="服务器地址">
-        <button type="submit">添加节点</button>
-      </form>
-      <div id="nodes" class="table-wrap">读取中…</div>
-      <pre id="share-output" class="output" hidden></pre>
-      <form id="add-user-form" class="inline-form">
-        <input name="node_id" placeholder="节点 ID" required>
-        <input name="user_id" placeholder="用户 ID" required>
-        <input name="name" placeholder="用户名称">
-        <button type="submit" class="secondary">添加用户</button>
-      </form>
-    </section>
-    <section class="card">
-      <div class="section-title"><h2>证书</h2><a href="/api/v1/certificates" target="_blank">查看证书 JSON</a></div>
-      <form id="cert-form" class="inline-form">
-        <input name="domain" placeholder="example.com" required>
-        <input name="email" type="email" placeholder="ACME 邮箱（可选）">
-        <button type="submit">申请/续签证书</button>
-      </form>
-    </section>
-    <section class="card">
-      <div class="section-title"><h2>最近任务</h2><a href="/api/v1/tasks" target="_blank">打开 JSON</a></div>
-      <div id="tasks" class="table-wrap">读取中…</div>
-    </section>
-    <section class="card">
-      <div class="section-title"><h2>安全设置</h2><span class="muted">修改后需要重新登录</span></div>
-      <form id="password-form" class="inline-form">
-        <input name="current" type="password" autocomplete="current-password" placeholder="当前密码" required>
-        <input name="next" type="password" autocomplete="new-password" minlength="12" placeholder="新密码（至少 12 位）" required>
-        <button type="submit">修改密码</button>
-      </form>
-    </section>
-  </main>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div><div><strong>sb-manager</strong><small>CONTROL CENTER</small></div></div>
+      <nav class="side-nav" aria-label="主导航">
+        <p class="nav-label">工作区</p>
+        <a class="nav-item active" href="#overview" data-nav="overview"><span class="nav-icon">⌂</span>总览</a>
+        <a class="nav-item" href="#servers" data-nav="servers"><span class="nav-icon">▦</span>服务器</a>
+        <a class="nav-item" href="#nodes" data-nav="nodes"><span class="nav-icon">◇</span>节点与用户</a>
+        <a class="nav-item" href="#quick-actions" data-nav="quick-actions"><span class="nav-icon">⚡</span>快捷操作</a>
+        <a class="nav-item" href="#certificates" data-nav="certificates"><span class="nav-icon">▣</span>证书</a>
+        <a class="nav-item" href="#tasks" data-nav="tasks"><span class="nav-icon">☷</span>任务与审计</a>
+      </nav>
+      <div class="sidebar-footer"><div class="secure-note"><span class="status-dot online"></span><span><strong>本机安全连接</strong><small>秘密仅保留在服务器</small></span></div><div class="version">WebUI v0.1 · SQLite</div></div>
+    </aside>
+    <div class="main-shell">
+      <header class="topbar">
+        <button class="mobile-menu" id="menu-toggle" aria-label="打开导航" aria-expanded="false">☰</button>
+        <div class="breadcrumbs"><span>控制中心</span><i>/</i><strong id="page-title">总览</strong></div>
+        <div class="topbar-actions"><span class="connection-pill"><span class="status-dot online"></span>本机在线</span><button id="refresh" class="icon-button" title="刷新数据" aria-label="刷新数据">↻</button><form method="post" action="/logout"><button class="user-button" type="submit" title="退出登录"><span class="avatar">S</span><span class="user-name">管理员</span><span class="chevron">⌄</span></button></form></div>
+      </header>
+      <main class="content" id="overview">
+        <section class="welcome-row"><div><p class="eyebrow">SERVER OPERATIONS</p><h1>欢迎回来，管理员 <span class="wave">✦</span></h1><p class="muted">统一查看 sing-box 服务状态，安全地执行日常运维操作。</p></div><button id="add-server" class="primary-button"><span>＋</span> 添加服务器</button></section>
+        <section id="alerts" aria-live="polite"></section>
+        <section class="kpi-grid" aria-label="关键指标"><article class="kpi-card accent-blue"><div class="kpi-heading"><span>服务状态</span><span class="kpi-icon">◉</span></div><strong id="service-state">读取中…</strong><small><span class="status-dot online"></span> sing-box 守护进程</small></article><article class="kpi-card accent-violet"><div class="kpi-heading"><span>活跃节点</span><span class="kpi-icon">◇</span></div><strong id="node-count">读取中…</strong><small>本机配置中的节点</small></article><article class="kpi-card accent-green"><div class="kpi-heading"><span>BBR 加速</span><span class="kpi-icon">↗</span></div><strong id="bbr-state">读取中…</strong><small>Linux TCP 拥塞控制</small></article><article class="kpi-card accent-amber"><div class="kpi-heading"><span>HY2 UDP 缓冲</span><span class="kpi-icon">≋</span></div><strong id="hy2-state">读取中…</strong><small>官方推荐 16 MiB</small></article></section>
+        <section class="dashboard-grid"><article class="panel status-panel"><div class="panel-header"><div><p class="eyebrow">LOCAL INSTANCE</p><h2>本机运行状态</h2></div><span class="live-badge"><span class="status-dot online"></span>实时</span></div><div class="runtime-meta"><span class="core-chip" id="core-version">核心：读取中…</span><span class="muted">声明式配置 · 自动回滚</span></div><pre id="status-output" class="output">读取中…</pre></article><article class="panel quick-panel" id="quick-actions"><div class="panel-header"><div><p class="eyebrow">ONE-CLICK</p><h2>快捷操作</h2></div><span class="muted">安全任务</span></div><div class="quick-actions"><button data-action="bbr.enable" class="quick-action"><span class="action-symbol green">↗</span><span><strong>开启 BBR</strong><small>优化 TCP 吞吐</small></span><b>›</b></button><button data-action="hy2-buffer.enable" class="quick-action"><span class="action-symbol blue">≋</span><span><strong>开启 HY2 UDP</strong><small>设置为 16 MiB</small></span><b>›</b></button><button data-action="core.update" class="quick-action"><span class="action-symbol violet">↻</span><span><strong>更新 sing-box</strong><small>保持最新核心</small></span><b>›</b></button><button data-action="backup.create" class="quick-action"><span class="action-symbol amber">▣</span><span><strong>创建备份</strong><small>保存当前状态</small></span><b>›</b></button></div><div class="quick-footer"><button data-action="health.check" class="text-button">运行健康检查 <span>→</span></button><button data-action="doctor.repair-safe" class="text-button">安全修复 <span>→</span></button></div></article></section>
+        <section class="panel" id="servers"><div class="panel-header"><div><p class="eyebrow">FLEET</p><h2>服务器</h2><p class="muted panel-subtitle">管理已加入的实例，批量执行常用任务。</p></div><button class="secondary-button" id="server-refresh" type="button">↻ 刷新列表</button></div><div class="table-wrap" id="servers-list">读取中…</div><div class="batch-toolbar"><form id="batch-form" class="batch-form"><select name="action" aria-label="批量操作"><option value="bbr.enable">批量开启 BBR</option><option value="hy2-buffer.enable">批量开启 HY2 UDP</option><option value="core.update">批量更新核心</option><option value="backup.create">批量备份</option><option value="health.check">批量健康检查</option></select><button type="submit" class="secondary-button">对选中服务器执行</button></form><pre id="join-command" class="output join-output" hidden></pre></div></section>
+        <section class="panel" id="nodes"><div class="panel-header"><div><p class="eyebrow">INBOUNDS</p><h2>节点与用户</h2><p class="muted panel-subtitle">通过 sb-manager 管理协议、端口与访问用户。</p></div><a class="text-button" href="/api/v1/nodes" target="_blank" rel="noreferrer">查看 JSON →</a></div><form id="add-node-form" class="form-grid compact-form"><input name="id" placeholder="节点 ID" pattern="[a-z0-9][a-z0-9._-]{0,47}" required><select name="protocol" aria-label="协议"><option value="ss">Shadowsocks 2022</option><option value="hy2">Hysteria2</option><option value="vmess">VMess</option></select><input name="port" type="number" min="1" max="65535" placeholder="端口" required><input name="domain" placeholder="域名（TLS/HY2）"><input name="address" placeholder="服务器地址"><button type="submit" class="primary-button">添加节点</button></form><div class="table-wrap" id="nodes-list">读取中…</div><pre id="share-output" class="output share-output" hidden></pre><details class="subsection"><summary>添加节点用户</summary><form id="add-user-form" class="form-grid compact-form"><input name="node_id" placeholder="节点 ID" required><input name="user_id" placeholder="用户 ID" required><input name="name" placeholder="用户名称"><button type="submit" class="secondary-button">添加用户</button></form></details></section>
+        <section class="two-column"><article class="panel" id="certificates"><div class="panel-header"><div><p class="eyebrow">TLS</p><h2>证书</h2></div><a class="text-button" href="/api/v1/certificates" target="_blank" rel="noreferrer">查看 JSON →</a></div><p class="muted panel-subtitle">申请或续签 ACME 证书，私钥只保留在本机。</p><form id="cert-form" class="stack-form"><input name="domain" placeholder="example.com" required><input name="email" type="email" placeholder="ACME 邮箱（可选）"><button type="submit" class="primary-button">申请 / 续签证书</button></form></article><article class="panel"><div class="panel-header"><div><p class="eyebrow">ACCOUNT</p><h2>安全设置</h2></div><span class="muted">修改后重新登录</span></div><form id="password-form" class="stack-form"><input name="current" type="password" autocomplete="current-password" placeholder="当前密码" required><input name="next" type="password" autocomplete="new-password" minlength="12" placeholder="新密码（至少 12 位）" required><button type="submit" class="secondary-button">修改密码</button></form></article></section>
+        <section class="panel" id="tasks"><div class="panel-header"><div><p class="eyebrow">AUDIT TRAIL</p><h2>最近任务</h2><p class="muted panel-subtitle">所有操作均记录审计事件，便于追踪与回滚。</p></div><a class="text-button" href="/api/v1/tasks" target="_blank" rel="noreferrer">打开 JSON →</a></div><div class="table-wrap" id="tasks-list">读取中…</div></section>
+      </main>
+      <footer class="page-footer"><span>sb-manager-web · 以现有 sb-manager 脚本为执行层</span><span>SQLite · 本机密钥隔离</span></footer>
+    </div>
+  </div>
+  <div class="scrim" id="scrim" hidden></div>
   <script src="/static/app.js" defer></script>
 </body>
 </html>
