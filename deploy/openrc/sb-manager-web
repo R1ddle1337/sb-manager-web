@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+
+name="sb-manager-web"
+description="sb-manager Go WebUI"
+command="/usr/local/bin/sb-web"
+command_args="server --config /etc/sb-manager-web/config.json"
+command_user="root:root"
+supervisor="supervise-daemon"
+supervise_daemon_args="--stdout /var/log/sb-manager-web/server.log --stderr /var/log/sb-manager-web/server.err.log"
+output_log="/var/log/sb-manager-web/server.log"
+error_log="/var/log/sb-manager-web/server.err.log"
+pidfile="/run/${RC_SVCNAME}.pid"
+command_background="yes"
+respawn_delay=3
+
+depend() {
+  need net
+  after firewall
+}

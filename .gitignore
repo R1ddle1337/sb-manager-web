@@ -1,0 +1,8 @@
+/dist/
+*.db
+*.log
+*.key
+*.pem
+config.local.json
+.idea/
+.vscode/

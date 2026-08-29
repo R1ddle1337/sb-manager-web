@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>sb-manager-web</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><strong>sb-manager-web</strong><span class="muted">控制面板</span></div>
+    <form method="post" action="/logout"><button class="secondary" type="submit">退出</button></form>
+  </header>
+  <main class="layout">
+    <section class="hero">
+      <div><h1>服务器概览</h1><p class="muted">WebUI 只调用本地 sb-manager，不直接编辑生成配置。</p></div>
+      <button id="refresh" class="secondary">刷新</button>
+    </section>
+    <section id="alerts"></section>
+    <section class="grid" id="summary">
+      <article class="card stat"><span>服务</span><strong id="service-state">读取中…</strong></article>
+      <article class="card stat"><span>节点</span><strong id="node-count">读取中…</strong></article>
+      <article class="card stat"><span>BBR</span><strong id="bbr-state">读取中…</strong></article>
+      <article class="card stat"><span>HY2 UDP</span><strong id="hy2-state">读取中…</strong></article>
+    </section>
+    <section class="card">
+      <div class="section-title"><h2>本机状态</h2><code id="core-version">核心：读取中…</code></div>
+      <pre id="status-output" class="output">读取中…</pre>
+    </section>
+    <section class="card">
+      <div class="section-title"><h2>服务器</h2><button id="add-server" class="secondary">生成加入命令</button></div>
+      <div id="servers" class="table-wrap">读取中…</div>
+      <pre id="join-command" class="output" hidden></pre>
+    </section>
+    <section class="card">
+      <div class="section-title"><h2>快捷操作</h2><span class="muted">操作会创建任务并由 sb-manager 执行</span></div>
+      <div class="actions">
+        <button data-action="bbr.enable">开启 BBR</button>
+        <button data-action="bbr.disable" class="secondary">恢复 BBR</button>
+        <button data-action="hy2-buffer.enable">开启 HY2 UDP 16 MiB</button>
+        <button data-action="hy2-buffer.disable" class="secondary">恢复 HY2 UDP</button>
+        <button data-action="core.update" class="secondary">更新 sing-box</button>
+      </div>
+    </section>
+    <section class="card">
+      <div class="section-title"><h2>节点</h2><a href="/api/v1/nodes" target="_blank">打开 JSON</a></div>
+      <div id="nodes" class="table-wrap">读取中…</div>
+    </section>
+    <section class="card">
+      <div class="section-title"><h2>最近任务</h2><a href="/api/v1/tasks" target="_blank">打开 JSON</a></div>
+      <div id="tasks" class="table-wrap">读取中…</div>
+    </section>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

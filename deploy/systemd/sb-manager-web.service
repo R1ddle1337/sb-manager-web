@@ -1,0 +1,19 @@
+[Unit]
+Description=sb-manager Go WebUI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sb-web server --config /etc/sb-manager-web/config.json
+Restart=on-failure
+RestartSec=3s
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/sb-manager-web /etc/sb-manager /etc/sysctl.d /var/lib/sb-manager-web /var/lib/sb-manager /var/log/sb-manager-web /var/log/sb-manager /run/sb-manager-web /run/sb-manager /usr/local/lib/sb-manager /usr/local/bin
+
+[Install]
+WantedBy=multi-user.target

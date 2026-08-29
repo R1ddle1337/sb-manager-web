@@ -1,0 +1,65 @@
+# sb-manager-web
+
+基于 Go 的 sing-box Web 控制层。它建立在 [`sb-manager`](https://github.com/R1ddle1337/sb-manager) 之上，不重写协议渲染、状态迁移、服务管理、校验或回滚逻辑。
+
+## 当前状态
+
+已实现第一版可运行基础：
+
+- Go 静态 WebUI，页面资源嵌入二进制
+- 登录、Argon2id 密码、Session、CSRF
+- 本机 `sb` CLI 安全调用和命令白名单
+- 状态、节点、核心能力、BBR、Hysteria2 UDP 缓冲区查看
+- BBR/HY2/core 操作任务和任务状态
+- bbolt 控制端元数据
+- 一次性 enrollment token
+- Agent Ed25519 身份、心跳、轮询任务和结果上报
+- systemd/OpenRC 服务文件
+- amd64/arm64/armv7 交叉编译
+
+完整开发设计当前维护在 [`sb-manager/docs/SB_MANAGER_WEB_DEVELOPMENT.md`](https://github.com/R1ddle1337/sb-manager/blob/main/docs/SB_MANAGER_WEB_DEVELOPMENT.md)，新项目稳定后会同步维护本项目自身的架构文档。
+
+## 开发
+
+要求 Go 1.18 或更高版本：
+
+```bash
+gofmt -w cmd internal web
+go test ./...
+go vet ./...
+make release
+```
+
+运行本机面板：
+
+```bash
+go run ./cmd/sb-web init --config /tmp/sb-web/config.json
+go run ./cmd/sb-web server --config /tmp/sb-web/config.json
+```
+
+默认监听 `127.0.0.1:9091`。生产环境请使用 HTTPS、反向代理或 Cloudflare Tunnel，不要直接把 root Web 服务暴露到公网。
+
+## 安装
+
+服务器必须先安装 `sb-manager`：
+
+```bash
+curl -fsSL https://github.com/R1ddle1337/sb-manager-web/raw/main/install.sh | sudo bash
+sb-web enable
+```
+
+安装器会校验发布包 SHA256，并根据 systemd/OpenRC 安装服务。开发时可以使用：
+
+```bash
+SBM_WEB_BINARY_URL=/path/to/sb-web SBM_WEB_SKIP_VERIFY=1 sudo -E bash install.sh --no-start
+```
+
+## Agent 加入
+
+控制端登录后创建一次性 enrollment token，然后在新服务器执行：
+
+```bash
+sb-web join https://panel.example.com TOKEN
+```
+
+Agent 主动连接控制端，不需要开放远程 SSH 管理端口。长期身份由每台服务器独立 Ed25519 私钥提供，私钥保存在本机。

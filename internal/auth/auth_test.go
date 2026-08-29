@@ -1,0 +1,35 @@
+package auth
+
+import (
+	"testing"
+	"time"
+
+	"github.com/R1ddle1337/sb-manager-web/internal/storage"
+)
+
+func TestPasswordAndSession(t *testing.T) {
+	hash, err := HashPassword("correct horse battery staple")
+	if err != nil || !VerifyPassword(hash, "correct horse battery staple") || VerifyPassword(hash, "wrong password") {
+		t.Fatalf("password verification failed: hash=%q err=%v", hash, err)
+	}
+	if _, err := HashPassword("short"); err == nil {
+		t.Fatal("short password was accepted")
+	}
+	store, err := storage.Open(t.TempDir() + "/web.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	m := New(store)
+	session, err := m.NewSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := m.ValidateSession(session.ID); !ok || got.CSRF != session.CSRF {
+		t.Fatal("new session did not validate")
+	}
+	if _, ok := m.ValidateSession("missing"); ok {
+		t.Fatal("missing session validated")
+	}
+	_ = time.Now()
+}
