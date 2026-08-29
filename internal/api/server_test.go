@@ -98,6 +98,17 @@ func TestLoginStatusAndAction(t *testing.T) {
 	if realmResponse.StatusCode != http.StatusOK || realm["enabled"] != false {
 		t.Fatalf("realm response: %d %#v", realmResponse.StatusCode, realm)
 	}
+	for _, page := range []string{"/", "/servers/local", "/servers/local/nodes/demo", "/settings/users"} {
+		pageResponse, pageErr := client.Get(server.URL + page)
+		if pageErr != nil {
+			t.Fatal(pageErr)
+		}
+		pageBody, _ := io.ReadAll(pageResponse.Body)
+		pageResponse.Body.Close()
+		if pageResponse.StatusCode != http.StatusOK || len(pageBody) == 0 {
+			t.Fatalf("page %s: status=%d body=%d", page, pageResponse.StatusCode, len(pageBody))
+		}
+	}
 	body := strings.NewReader(`{"action":"bbr.enable","idempotency_key":"test-action-1"}`)
 	request, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/servers/local/actions", body)
 	request.Header.Set("Content-Type", "application/json")
@@ -113,6 +124,40 @@ func TestLoginStatusAndAction(t *testing.T) {
 	actionResponse.Body.Close()
 	if actionResponse.StatusCode != http.StatusAccepted || task["id"] == nil {
 		t.Fatalf("action response: %d %#v", actionResponse.StatusCode, task)
+	}
+	userBody := strings.NewReader(`{"username":"operator","password":"correct horse battery staple","role":"operator"}`)
+	userRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/users", userBody)
+	userRequest.Header.Set("Content-Type", "application/json")
+	userRequest.Header.Set("X-CSRF-Token", csrf)
+	userResponse, err := client.Do(userRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userResponse.Body.Close()
+	if userResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("user create status: %d", userResponse.StatusCode)
+	}
+	roleBody := strings.NewReader(`{"role":"viewer"}`)
+	roleRequest, _ := http.NewRequest(http.MethodPatch, server.URL+"/api/v1/users/operator", roleBody)
+	roleRequest.Header.Set("Content-Type", "application/json")
+	roleRequest.Header.Set("X-CSRF-Token", csrf)
+	roleResponse, err := client.Do(roleRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleResponse.Body.Close()
+	if roleResponse.StatusCode != http.StatusOK {
+		t.Fatalf("role update status: %d", roleResponse.StatusCode)
+	}
+	deleteRequest, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/users/operator", nil)
+	deleteRequest.Header.Set("X-CSRF-Token", csrf)
+	deleteResponse, err := client.Do(deleteRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteResponse.Body.Close()
+	if deleteResponse.StatusCode != http.StatusOK {
+		t.Fatalf("user delete status: %d", deleteResponse.StatusCode)
 	}
 }
 

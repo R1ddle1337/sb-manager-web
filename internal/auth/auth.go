@@ -73,8 +73,65 @@ func (m *Manager) EnsureAdmin() (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	err = m.store.PutUser(types.User{Username: "admin", Hash: hash, Created: time.Now().UTC()})
+	err = m.store.PutUser(types.User{Username: "admin", Hash: hash, Created: time.Now().UTC(), Role: "admin"})
 	return password, true, err
+}
+
+func (m *Manager) CreateUser(username, password, role string) error {
+	username = strings.TrimSpace(username)
+	if !validUsername(username) {
+		return errors.New("invalid username")
+	}
+	if role == "" {
+		role = "viewer"
+	}
+	if !validRole(role) {
+		return errors.New("invalid role")
+	}
+	if _, err := m.store.GetUser(username); err == nil {
+		return errors.New("username already exists")
+	}
+	hash, err := HashPassword(password)
+	if err != nil {
+		return err
+	}
+	return m.store.PutUser(types.User{Username: username, Hash: hash, Created: time.Now().UTC(), Role: role})
+}
+
+func (m *Manager) Role(username string) string {
+	user, err := m.store.GetUser(username)
+	if err != nil || user.Role == "" {
+		return "admin"
+	}
+	return user.Role
+}
+
+func (m *Manager) SetRole(username, role string) error {
+	if !validRole(role) {
+		return errors.New("invalid role")
+	}
+	user, err := m.store.GetUser(username)
+	if err != nil {
+		return err
+	}
+	user.Role = role
+	return m.store.PutUser(user)
+}
+
+func validUsername(username string) bool {
+	if len(username) < 1 || len(username) > 64 {
+		return false
+	}
+	for _, char := range username {
+		if !(char == '-' || char == '_' || char == '.' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validRole(role string) bool {
+	return role == "admin" || role == "operator" || role == "viewer"
 }
 
 func (m *Manager) Authenticate(username, password string) bool {
@@ -87,7 +144,12 @@ func (m *Manager) SetPassword(username, password string) error {
 	if err != nil {
 		return err
 	}
-	return m.store.PutUser(types.User{Username: username, Hash: hash, Created: time.Now().UTC()})
+	user, getErr := m.store.GetUser(username)
+	if getErr != nil {
+		return getErr
+	}
+	user.Hash = hash
+	return m.store.PutUser(user)
 }
 
 func (m *Manager) NewSession(username string) (types.Session, error) {

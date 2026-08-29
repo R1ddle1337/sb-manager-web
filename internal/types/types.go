@@ -3,11 +3,12 @@ package types
 import "time"
 
 const (
-	ServerLocal = "local"
-	TaskPending = "pending"
-	TaskRunning = "running"
-	TaskSuccess = "success"
-	TaskFailed  = "failed"
+	ServerLocal  = "local"
+	TaskPending  = "pending"
+	TaskRunning  = "running"
+	TaskSuccess  = "success"
+	TaskFailed   = "failed"
+	TaskCanceled = "canceled"
 )
 
 type Server struct {
@@ -27,21 +28,27 @@ type Server struct {
 	Capabilities       any       `json:"capabilities,omitempty"`
 	AgentPublicKey     string    `json:"agent_public_key,omitempty"`
 	AgentIdentityState string    `json:"agent_identity_state,omitempty"`
+	StateDigest        string    `json:"state_digest,omitempty"`
+	StateSchema        int       `json:"state_schema,omitempty"`
 }
 
 type Task struct {
-	ID             string         `json:"id"`
-	ServerID       string         `json:"server_id"`
-	Action         string         `json:"action"`
-	Args           map[string]any `json:"args,omitempty"`
-	Status         string         `json:"status"`
-	Output         string         `json:"output,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
-	StartedAt      *time.Time     `json:"started_at,omitempty"`
-	FinishedAt     *time.Time     `json:"finished_at,omitempty"`
-	IdempotencyKey string         `json:"idempotency_key,omitempty"`
-	BatchID        string         `json:"batch_id,omitempty"`
+	ID                  string         `json:"id"`
+	ServerID            string         `json:"server_id"`
+	Action              string         `json:"action"`
+	Args                map[string]any `json:"args,omitempty"`
+	Status              string         `json:"status"`
+	Output              string         `json:"output,omitempty"`
+	Error               string         `json:"error,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
+	StartedAt           *time.Time     `json:"started_at,omitempty"`
+	FinishedAt          *time.Time     `json:"finished_at,omitempty"`
+	IdempotencyKey      string         `json:"idempotency_key,omitempty"`
+	BatchID             string         `json:"batch_id,omitempty"`
+	ExpectedStateDigest string         `json:"expected_state_digest,omitempty"`
+	CancelRequested     bool           `json:"cancel_requested,omitempty"`
+	Attempt             int            `json:"attempt,omitempty"`
+	RetryOf             string         `json:"retry_of,omitempty"`
 }
 
 type EnrollmentToken struct {
@@ -54,6 +61,7 @@ type User struct {
 	Username string    `json:"username"`
 	Hash     string    `json:"hash"`
 	Created  time.Time `json:"created"`
+	Role     string    `json:"role,omitempty"`
 }
 
 type Session struct {

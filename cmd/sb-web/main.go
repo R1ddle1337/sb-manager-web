@@ -6,10 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -121,6 +123,11 @@ func serve(args []string) error {
 		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
 			return errors.New("tls enabled but cert_file/key_file are empty")
 		}
+		tlsConfig, tlsErr := handler.TLSConfig()
+		if tlsErr != nil {
+			return fmt.Errorf("prepare agent mTLS: %w", tlsErr)
+		}
+		httpServer.TLSConfig = tlsConfig
 		err = httpServer.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 	} else {
 		err = httpServer.ListenAndServe()
@@ -253,6 +260,9 @@ func join(args []string) error {
 		return errors.New("用法：sb-web join CONTROLLER_URL TOKEN [--config PATH]")
 	}
 	controller, token := args[0], args[1]
+	if err := validateControllerURL(controller); err != nil {
+		return err
+	}
 	configPath := defaultConfigPath
 	for i := 2; i < len(args); i++ {
 		if args[i] == "--config" && i+1 < len(args) {
@@ -289,6 +299,20 @@ func join(args []string) error {
 	}
 	fmt.Println("Agent 已注册并启动。")
 	return nil
+}
+
+func validateControllerURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("控制端 URL 无效")
+	}
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme == "http" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1" || parsed.Hostname() == "::1") {
+		return nil
+	}
+	return errors.New("远程控制端必须使用 HTTPS（本机 localhost 可使用 HTTP）")
 }
 
 func status(args []string) error {

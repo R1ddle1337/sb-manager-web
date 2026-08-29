@@ -96,7 +96,14 @@ The Realm token is generated and stored by `sb-manager` on the target server. It
 POST /api/v1/batch/actions
 GET  /api/v1/tasks
 GET  /api/v1/tasks/{task_id}
+POST /api/v1/tasks/{task_id}/cancel
+POST /api/v1/tasks/{task_id}/retry
 GET  /api/v1/audit
+GET  /api/v1/users
+POST /api/v1/users
+PATCH /api/v1/users/{username}
+DELETE /api/v1/users/{username}
+POST /api/v1/database/backup
 ```
 
 Batch request:
@@ -105,9 +112,31 @@ Batch request:
 {
   "server_ids": ["local", "srv_example"],
   "action": "bbr.enable",
-  "args": {}
+  "args": {},
+  "strategy": "percentage",
+  "percentage": 25
 }
 ```
+
+`strategy` can be `all`, `canary` (first eligible server only), or
+`percentage` (deterministic prefix of eligible servers). The response returns
+the selected strategy and creates one independently observable task per
+selected server.
+
+Task lifecycle endpoints:
+
+- `POST /api/v1/tasks/{id}/cancel` marks pending work canceled; running work is
+  marked for cancellation and its eventual result is recorded as canceled.
+- `POST /api/v1/tasks/{id}/retry` creates a new task with a new idempotency key,
+  incremented attempt number, and the latest remote state digest.
+
+On controller restart, tasks left in `running` are requeued as `pending`.
+
+## Roles
+
+The built-in `admin` account can manage users and all operations. `operator`
+can execute server/node tasks but cannot enroll servers or manage accounts.
+`viewer` can read status, capabilities, tasks and audit data only.
 
 ## Enrollment
 
@@ -139,6 +168,17 @@ The signature is Ed25519 over:
 ```text
 METHOD + "\n" + PATH + "\n" + UNIX_TIMESTAMP + "\n" + EXACT_BODY
 ```
+
+For deployments that enable `tls.require_agent_mtls`, registration additionally
+returns a client certificate signed by the controller's local Agent CA. The
+certificate and private key are saved only in the Agent identity file. Agent
+heartbeat/poll/result requests must then present that certificate and still
+pass the Ed25519 signature check.
+
+Agent heartbeats include a SHA-256 digest and schema number for the local
+`state.json`. Mutating remote tasks carry the digest observed at enqueue time;
+an Agent refuses to execute when the local digest has changed, preventing a
+central task from overwriting a local CLI change.
 
 ## Errors
 

@@ -31,5 +31,17 @@ func TestPasswordAndSession(t *testing.T) {
 	if _, ok := m.ValidateSession("missing"); ok {
 		t.Fatal("missing session validated")
 	}
+	if err := m.CreateUser("operator", "another correct password", "operator"); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Role("operator"); got != "operator" {
+		t.Fatalf("unexpected role: %s", got)
+	}
+	if err := m.SetPassword("operator", "updated correct password"); err != nil {
+		t.Fatal(err)
+	}
+	if !m.Authenticate("operator", "updated correct password") {
+		t.Fatal("operator password update failed")
+	}
 	_ = time.Now()
 }

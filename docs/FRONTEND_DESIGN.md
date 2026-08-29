@@ -39,6 +39,10 @@ WebUI 借鉴 [Cli-Proxy-API-Management-Center](https://github.com/router-for-me/
 └── 最近任务
 ```
 
+表格中的服务器和节点名称链接到 `/servers/{id}` 及
+`/servers/{id}/nodes/{node}` 详情页。详情页提供能力快照和节点编辑表单，
+首次使用仍从总览开始，不要求用户理解 URL 结构。
+
 ## 视觉规范
 
 - 深蓝黑背景配轻微径向光晕，面板使用半透明玻璃感和低对比度边框。

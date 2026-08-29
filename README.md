@@ -16,7 +16,10 @@
 - 一次性 enrollment token
 - Agent Ed25519 身份、心跳、轮询任务和结果上报
 - 多服务器清单、批量 BBR/HY2/核心/备份/健康任务、失败阈值和审计记录
+- 任务取消/重试、状态摘要漂移保护、Agent mTLS（可选强制）和证书自动轮换
 - 节点新增/编辑/启停/删除、用户、分享链接和证书操作 API
+- 服务器/节点详情页，以及 admin/operator/viewer 角色接口
+- SQLite 在线备份、数据库健康检查和主动/被动控制端部署路径
 - systemd/OpenRC 服务文件
 - root helper Unix Socket 权限隔离（Web 服务使用 `sbweb` 用户）
 - amd64/arm64/armv7 交叉编译

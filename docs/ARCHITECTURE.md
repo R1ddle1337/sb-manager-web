@@ -50,7 +50,9 @@ The controller creates a random, single-use enrollment token valid for ten minut
 4. signs every heartbeat, poll and result request;
 5. keeps its private key in a mode-0600 local identity file.
 
-Transport uses normal HTTPS certificate verification. Application request signatures bind method, path, timestamp and exact body. The controller rejects requests outside a two-minute window. Removing the server record revokes that identity.
+Transport uses normal HTTPS certificate verification. Application request signatures bind method, path, timestamp and exact body. The controller rejects requests outside a two-minute window. Deployments can set `tls.require_agent_mtls=true`; registration then bootstraps a controller-signed client certificate and Agent requests must pass both mTLS and Ed25519 checks. Removing the server record revokes that identity.
+
+Each heartbeat also carries a SHA-256 digest of the target's state file. Mutating tasks include the digest observed by the controller; the Agent fails a task instead of applying it when the state has drifted locally.
 
 No node password, certificate private key, Snell PSK or Realm token is included in heartbeat data.
 
@@ -61,6 +63,16 @@ Tasks have a stable ID, target server, fixed action, structured arguments, statu
 ```text
 pending -> running -> success|failed
 ```
+
+Pending and running tasks can be canceled. Failed/canceled tasks can be retried
+with a new idempotency key and attempt number; a running subprocess is allowed
+to finish safely and its result is recorded as canceled when requested.
+On controller startup, any task left in `running` is atomically requeued as
+`pending`, so a process restart does not strand work claimed before the crash.
+
+The UI also exposes dedicated server and node detail routes (`/servers/{id}`
+and `/servers/{id}/nodes/{node}`) while keeping the single-page overview for
+first-time users.
 
 The controller atomically claims a pending remote task. An Agent can only submit results for its own task. Local and remote output is truncated and secret JSON fields are redacted before persistence.
 
@@ -78,6 +90,13 @@ The controller uses a single SQLite database with these tables:
 - `audit`
 
 Agent private keys are not in the controller database. Node secrets remain exclusively in sb-manager storage on their target server.
+
+SQLite is deliberately the single-writer control-plane store. High availability
+uses an active/passive deployment (shared or replicated filesystem plus an
+external VIP/reverse-proxy health check), not concurrent active writers. The
+`/healthz` endpoint is suitable for the proxy's liveness check, and the WAL
+database can be copied while the service is stopped for a deterministic
+failover snapshot.
 
 ## Network defaults
 

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -45,6 +46,7 @@ type Server struct {
 	sem     chan struct{}
 	loginMu sync.Mutex
 	logins  map[string]loginAttempt
+	agentCA *agentCA
 }
 
 type loginAttempt struct {
@@ -64,16 +66,30 @@ func New(cfg config.Config, store *storage.Store) (*Server, string, error) {
 	if !created {
 		password = ""
 	}
-	return &Server{cfg: cfg, store: store, auth: authManager, runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}, sem: make(chan struct{}, cfg.Tasks.Concurrency), logins: make(map[string]loginAttempt)}, password, nil
+	server := &Server{cfg: cfg, store: store, auth: authManager, runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}, sem: make(chan struct{}, cfg.Tasks.Concurrency), logins: make(map[string]loginAttempt)}
+	if cfg.TLS.RequireAgentMTLS || cfg.TLS.ClientCAFile != "" || cfg.TLS.ClientCAKeyFile != "" {
+		if err := server.ensureAgentCA(); err != nil {
+			return nil, "", err
+		}
+	}
+	return server, password, nil
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.page)
+	mux.HandleFunc("/servers/", s.detailPage)
+	mux.HandleFunc("/settings/users", s.usersPage)
 	mux.HandleFunc("/login", s.login)
 	mux.HandleFunc("/logout", s.logout)
 	mux.HandleFunc("/static/", s.static)
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]any{"ok": true}) })
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if err := s.store.Ping(r.Context()); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "error": "database unavailable"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
 	mux.HandleFunc("/api/v1/", s.api)
 	return securityHeaders(mux)
 }
@@ -107,6 +123,46 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = tmpl.Execute(w, map[string]any{"Version": "0.1.0"})
+}
+
+func (s *Server) detailPage(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(r); !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 2 || parts[0] != "servers" || parts[1] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	data := map[string]any{"ServerID": parts[1], "NodeID": ""}
+	name := "templates/server.html"
+	if len(parts) == 4 && parts[2] == "nodes" && parts[3] != "" {
+		name = "templates/node.html"
+		data["NodeID"] = parts[3]
+	} else if len(parts) != 2 {
+		http.NotFound(w, r)
+		return
+	}
+	tmpl, err := template.ParseFS(web.Files, name)
+	if err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+		return
+	}
+	_ = tmpl.Execute(w, data)
+}
+
+func (s *Server) usersPage(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(r); !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	tmpl, err := template.ParseFS(web.Files, "templates/users.html")
+	if err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+		return
+	}
+	_ = tmpl.Execute(w, nil)
 }
 
 func (s *Server) static(w http.ResponseWriter, r *http.Request) {
@@ -260,9 +316,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if r.Method != http.MethodGet && r.URL.Path != "/api/v1/password" && s.auth.Role(session.Username) == "viewer" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "当前账号只有只读权限", nil)
+		return
+	}
+	if r.URL.Path == "/api/v1/enrollment" && s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以添加服务器", nil)
+		return
+	}
 	switch r.URL.Path {
 	case "/api/v1/session":
-		writeJSON(w, http.StatusOK, map[string]any{"username": session.Username, "csrf": session.CSRF})
+		writeJSON(w, http.StatusOK, map[string]any{"username": session.Username, "role": s.auth.Role(session.Username), "csrf": session.CSRF})
 	case "/api/v1/password":
 		s.changePassword(w, r, session)
 	case "/api/v1/status":
@@ -289,9 +353,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.tasks(w, r)
 	case "/api/v1/audit":
 		s.audit(w, r)
+	case "/api/v1/users":
+		s.usersAPI(w, r, session)
+	case "/api/v1/database/backup":
+		s.databaseBackup(w, r, session)
 	case "/api/v1/batch/actions":
 		s.batchAction(w, r)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/api/v1/users/") {
+			s.usersAPI(w, r, session)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
 			s.serverAPI(w, r)
 			return
@@ -302,6 +374,25 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "接口不存在", nil)
 	}
+}
+
+func (s *Server) databaseBackup(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	if s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以备份控制端数据库", nil)
+		return
+	}
+	now := time.Now().UTC()
+	destination := filepath.Join(s.cfg.DataDir, "backups", "web-"+now.Format("20060102T150405Z")+"-"+strconv.FormatInt(now.UnixNano()%1000000, 10)+".db")
+	if err := s.store.Backup(r.Context(), destination); err != nil {
+		writeError(w, http.StatusInternalServerError, "BACKUP_FAILED", err.Error(), nil)
+		return
+	}
+	s.recordAudit(session.Username, "database.backup", nil, nil, "success")
+	writeJSON(w, http.StatusCreated, map[string]any{"path": destination})
 }
 
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, session types.Session) {
@@ -347,6 +438,8 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 		ServerIDs []string       `json:"server_ids"`
 		Action    string         `json:"action"`
 		Args      map[string]any `json:"args"`
+		Strategy  string         `json:"strategy"`
+		Percent   int            `json:"percentage"`
 	}
 	if err := decodeBody(r, &request); err != nil || len(request.ServerIDs) == 0 || len(request.ServerIDs) > 100 {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "server_ids 必须包含 1-100 台服务器", nil)
@@ -355,22 +448,56 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 	if request.Args == nil {
 		request.Args = map[string]any{}
 	}
+	if request.Strategy == "" {
+		request.Strategy = "all"
+	}
+	if request.Strategy != "all" && request.Strategy != "canary" && request.Strategy != "percentage" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "strategy 必须是 all、canary 或 percentage", nil)
+		return
+	}
+	if request.Strategy == "percentage" && (request.Percent < 1 || request.Percent > 100) {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "percentage 必须是 1-100", nil)
+		return
+	}
+	if request.Strategy != "percentage" {
+		request.Percent = 100
+	}
 	if _, err := runner.ActionCommand(request.Action, request.Args); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
 		return
 	}
 	batchID, _ := auth.RandomToken(10)
 	created := []types.Task{}
+	eligible := []string{}
 	for _, serverID := range request.ServerIDs {
 		server, err := s.store.GetServer(serverID)
 		if err != nil || (serverID != types.ServerLocal && !server.Online) {
+			continue
+		}
+		eligible = append(eligible, serverID)
+	}
+	limit := len(eligible)
+	if request.Strategy == "canary" {
+		limit = 1
+	} else if request.Strategy == "percentage" {
+		limit = (len(eligible)*request.Percent + 99) / 100
+		if limit < 1 && len(eligible) > 0 {
+			limit = 1
+		}
+	}
+	if limit > len(eligible) {
+		limit = len(eligible)
+	}
+	for _, serverID := range eligible[:limit] {
+		server, err := s.store.GetServer(serverID)
+		if err != nil {
 			continue
 		}
 		id, err := auth.RandomToken(12)
 		if err != nil {
 			continue
 		}
-		task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: "batch_" + batchID + "_" + serverID, BatchID: "batch_" + batchID}
+		task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: "batch_" + batchID + "_" + serverID, BatchID: "batch_" + batchID, ExpectedStateDigest: expectedDigest(server)}
 		if s.store.PutTask(task) != nil {
 			continue
 		}
@@ -388,7 +515,7 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 		taskIDs = append(taskIDs, task.ID)
 	}
 	s.recordAudit("admin", request.Action, request.ServerIDs, taskIDs, "accepted")
-	writeJSON(w, http.StatusAccepted, map[string]any{"batch_id": "batch_" + batchID, "tasks": created})
+	writeJSON(w, http.StatusAccepted, map[string]any{"batch_id": "batch_" + batchID, "strategy": request.Strategy, "percentage": request.Percent, "tasks": created})
 }
 
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
@@ -402,6 +529,96 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+func (s *Server) usersAPI(w http.ResponseWriter, r *http.Request, session types.Session) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 3 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "users" {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "用户接口不存在", nil)
+		return
+	}
+	if len(parts) == 3 && r.Method == http.MethodGet {
+		users, err := s.store.ListUsers()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"users": users})
+		return
+	}
+	if s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以管理用户", nil)
+		return
+	}
+	if len(parts) == 3 && r.Method == http.MethodPost {
+		var request struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Role     string `json:"role"`
+		}
+		if err := decodeBody(r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		if err := s.auth.CreateUser(request.Username, request.Password, request.Role); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		s.recordAudit(session.Username, "user.create", nil, nil, "accepted")
+		writeJSON(w, http.StatusCreated, map[string]any{"username": request.Username, "role": s.auth.Role(request.Username)})
+		return
+	}
+	if len(parts) != 4 {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "用户接口不存在", nil)
+		return
+	}
+	username := parts[3]
+	switch r.Method {
+	case http.MethodPatch:
+		var request struct {
+			Role string `json:"role"`
+		}
+		if err := decodeBody(r, &request); err != nil || request.Role == "" {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "role 必填", nil)
+			return
+		}
+		if username == "admin" && request.Role != "admin" {
+			writeError(w, http.StatusConflict, "LAST_ADMIN_REQUIRED", "内置 admin 必须保留管理员权限", nil)
+			return
+		}
+		if request.Role != "admin" && s.auth.Role(username) == "admin" {
+			users, listErr := s.store.ListUsers()
+			admins := 0
+			for _, user := range users {
+				if s.auth.Role(user.Username) == "admin" {
+					admins++
+				}
+			}
+			if listErr != nil || admins <= 1 {
+				writeError(w, http.StatusConflict, "LAST_ADMIN_REQUIRED", "至少需要保留一个管理员", nil)
+				return
+			}
+		}
+		if err := s.auth.SetRole(username, request.Role); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		s.recordAudit(session.Username, "user.role", nil, nil, "accepted")
+		writeJSON(w, http.StatusOK, map[string]any{"username": username, "role": request.Role})
+	case http.MethodDelete:
+		if username == "admin" || username == session.Username {
+			writeError(w, http.StatusConflict, "USER_PROTECTED", "不能删除内置 admin 或当前登录用户", nil)
+			return
+		}
+		if err := s.store.DeleteUser(username); err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		s.recordAudit(session.Username, "user.delete", nil, nil, "accepted")
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": username})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET、POST、PATCH、DELETE", nil)
+	}
 }
 
 func (s *Server) recordAudit(actor, action string, serverIDs, taskIDs []string, result string) {
@@ -682,7 +899,7 @@ func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request a
 		writeError(w, http.StatusInternalServerError, "RANDOM_FAILED", err.Error(), nil)
 		return
 	}
-	task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: request.IdempotencyKey}
+	task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: request.IdempotencyKey, ExpectedStateDigest: expectedDigest(server)}
 	if err := s.store.PutTask(task); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 		return
@@ -701,9 +918,19 @@ func firstNonEmptyString(value any) string {
 	return ""
 }
 
+func expectedDigest(server types.Server) string {
+	if server.ID == types.ServerLocal {
+		return ""
+	}
+	return server.StateDigest
+}
+
 func (s *Server) executeLocal(task types.Task) {
 	s.sem <- struct{}{}
 	defer func() { <-s.sem }()
+	if current, err := s.store.GetTask(task.ID); err == nil && (current.CancelRequested || current.Status == types.TaskCanceled) {
+		return
+	}
 	if stop, _ := s.store.BatchShouldStop(task.BatchID, s.cfg.Tasks.FailureStopPct); stop {
 		s.finishTask(task.ID, false, "", "batch stopped after reaching failure threshold")
 		return
@@ -722,7 +949,12 @@ func (s *Server) finishTask(id string, success bool, output, problem string) {
 		task.FinishedAt = &now
 		task.Output = truncate(redact(output), 32768)
 		task.Error = truncate(redact(problem), 8192)
-		if success {
+		if task.CancelRequested {
+			task.Status = types.TaskCanceled
+			if task.Error == "" {
+				task.Error = "task canceled"
+			}
+		} else if success {
 			task.Status = types.TaskSuccess
 		} else {
 			task.Status = types.TaskFailed
@@ -745,17 +977,57 @@ func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) taskAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) < 4 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "tasks" {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "任务接口不存在", nil)
 		return
 	}
-	id := path.Base(r.URL.Path)
+	id := parts[3]
 	task, err := s.store.GetTask(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "任务不存在", nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, task)
+	if len(parts) == 4 && r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, task)
+		return
+	}
+	if len(parts) != 5 || r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET、POST /cancel 或 /retry", nil)
+		return
+	}
+	switch parts[4] {
+	case "cancel":
+		updated, cancelErr := s.store.CancelTask(id)
+		if cancelErr != nil {
+			writeError(w, http.StatusConflict, "TASK_NOT_CANCELLABLE", cancelErr.Error(), nil)
+			return
+		}
+		s.recordAudit("admin", "task.cancel", []string{updated.ServerID}, []string{updated.ID}, "accepted")
+		writeJSON(w, http.StatusAccepted, updated)
+	case "retry":
+		server, serverErr := s.store.GetServer(task.ServerID)
+		if serverErr != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "服务器不存在", nil)
+			return
+		}
+		key := r.Header.Get("Idempotency-Key")
+		if key == "" {
+			key = "retry_" + strconv.FormatInt(time.Now().UnixNano(), 10)
+		}
+		created, retryErr := s.store.CloneTask(id, key, expectedDigest(server))
+		if retryErr != nil {
+			writeError(w, http.StatusConflict, "TASK_NOT_RETRYABLE", retryErr.Error(), nil)
+			return
+		}
+		if created.ServerID == types.ServerLocal {
+			go s.executeLocal(created)
+		}
+		s.recordAudit("admin", "task.retry", []string{created.ServerID}, []string{created.ID}, "accepted")
+		writeJSON(w, http.StatusAccepted, created)
+	default:
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "任务操作不存在", nil)
+	}
 }
 
 type registerRequest struct {
@@ -799,7 +1071,18 @@ func (s *Server) agentRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordAudit("enrollment", "agent.register", []string{server.ID}, nil, "success")
-	writeJSON(w, http.StatusCreated, map[string]any{"server_id": server.ID, "heartbeat_interval": "30s"})
+	certPEM, keyPEM, certErr := s.issueAgentCertificate(server.ID)
+	if certErr != nil {
+		writeError(w, http.StatusInternalServerError, "MTLS_ISSUE_FAILED", certErr.Error(), nil)
+		return
+	}
+	response := map[string]any{"server_id": server.ID, "heartbeat_interval": "30s"}
+	if len(certPEM) > 0 {
+		response["client_certificate"] = normalizePEM(certPEM)
+		response["client_key"] = normalizePEM(keyPEM)
+		response["client_ca"] = normalizePEM(s.agentCA.PEM)
+	}
+	writeJSON(w, http.StatusCreated, response)
 }
 
 func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
@@ -811,6 +1094,10 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
 	server, ok := s.verifyAgent(r, body)
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "AGENT_AUTH_FAILED", "Agent 身份验证失败", nil)
+		return
+	}
+	if s.cfg.TLS.RequireAgentMTLS && (r.TLS == nil || !s.verifyAgentMTLS(server.ID, r.TLS.PeerCertificates)) {
+		writeError(w, http.StatusUnauthorized, "AGENT_MTLS_REQUIRED", "需要有效的 Agent 客户端证书", nil)
 		return
 	}
 	switch r.URL.Path {
@@ -826,13 +1113,15 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
 			Backend          string `json:"backend"`
 			Status           any    `json:"status"`
 			Capabilities     any    `json:"capabilities"`
+			StateDigest      string `json:"state_digest"`
+			StateSchema      int    `json:"state_schema"`
 		}
 		if json.Unmarshal(body, &heartbeat) != nil {
 			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "心跳 JSON 无效", nil)
 			return
 		}
 		server.AgentVersion, server.SBManagerVersion, server.CoreVersion, server.Backend = heartbeat.AgentVersion, heartbeat.SBManagerVersion, heartbeat.CoreVersion, heartbeat.Backend
-		server.Status, server.Capabilities, server.Online, server.LastSeen = heartbeat.Status, heartbeat.Capabilities, true, time.Now().UTC()
+		server.Status, server.Capabilities, server.StateDigest, server.StateSchema, server.Online, server.LastSeen = heartbeat.Status, heartbeat.Capabilities, heartbeat.StateDigest, heartbeat.StateSchema, true, time.Now().UTC()
 		if err := s.store.PutServer(server); err != nil {
 			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 			return
@@ -875,7 +1164,15 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err = s.store.UpdateTask(result.TaskID, func(task *types.Task) error {
 			now := time.Now().UTC()
-			task.Status, task.FinishedAt = result.Status, &now
+			if task.CancelRequested {
+				task.Status = types.TaskCanceled
+				if result.Error == "" {
+					result.Error = "task canceled"
+				}
+			} else {
+				task.Status = result.Status
+			}
+			task.FinishedAt = &now
 			task.Output, task.Error = truncate(redact(result.Output), 32768), truncate(redact(result.Error), 8192)
 			return nil
 		})
@@ -884,6 +1181,21 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case "/api/v1/agent/rotate":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+			return
+		}
+		if s.agentCA == nil {
+			writeError(w, http.StatusConflict, "MTLS_DISABLED", "控制端未配置 Agent mTLS", nil)
+			return
+		}
+		certPEM, keyPEM, issueErr := s.issueAgentCertificate(server.ID)
+		if issueErr != nil {
+			writeError(w, http.StatusInternalServerError, "MTLS_ISSUE_FAILED", issueErr.Error(), nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"client_certificate": normalizePEM(certPEM), "client_key": normalizePEM(keyPEM), "client_ca": normalizePEM(s.agentCA.PEM)})
 	default:
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Agent 接口不存在", nil)
 	}

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -46,10 +47,27 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize sqlite schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	store := &Store{db: db}
+	if err := store.RecoverRunningTasks(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("recover running tasks: %w", err)
+	}
+	return store, nil
 }
 
-func (s *Store) Close() error             { return s.db.Close() }
+func (s *Store) Close() error                   { return s.db.Close() }
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
+func (s *Store) Backup(ctx context.Context, destination string) error {
+	if destination == "" {
+		return errors.New("backup destination is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, destination)
+	return err
+}
 func encode(value any) ([]byte, error)    { return json.Marshal(value) }
 func decode(data []byte, value any) error { return json.Unmarshal(data, value) }
 func stamp(value time.Time) string        { return value.UTC().Format(time.RFC3339Nano) }
@@ -75,6 +93,33 @@ func (s *Store) HasUsers() (bool, error) {
 	var count int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
 	return count > 0, err
+}
+
+func (s *Store) ListUsers() ([]types.User, error) {
+	rows, err := s.db.Query(`SELECT data FROM users ORDER BY username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := []types.User{}
+	for rows.Next() {
+		var data []byte
+		var user types.User
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err := decode(data, &user); err != nil {
+			return nil, err
+		}
+		user.Hash = ""
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+func (s *Store) DeleteUser(username string) error {
+	_, err := s.db.Exec(`DELETE FROM users WHERE username=?`, username)
+	return err
 }
 
 func (s *Store) PutSession(value types.Session) error {
@@ -157,6 +202,47 @@ func putTask(execer interface {
 	return err
 }
 func (s *Store) PutTask(task types.Task) error { return putTask(s.db, task) }
+
+// RecoverRunningTasks makes controller restarts resumable. A task claimed by
+// an Agent or local worker before a crash is safely returned to the pending
+// queue; the original attempt and an explanatory error remain in its record.
+func (s *Store) RecoverRunningTasks() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT data FROM tasks WHERE status=?`, types.TaskRunning)
+	if err != nil {
+		return err
+	}
+	var tasks []types.Task
+	for rows.Next() {
+		var data []byte
+		var task types.Task
+		if err := rows.Scan(&data); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := decode(data, &task); err != nil {
+			rows.Close()
+			return err
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		task.Status = types.TaskPending
+		task.StartedAt = nil
+		task.Error = "controller restarted; task requeued"
+		if err := putTask(tx, task); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 func (s *Store) GetTask(id string) (types.Task, error) {
 	var data []byte
 	var value types.Task
@@ -223,12 +309,72 @@ func (s *Store) FindTaskByIdempotency(key string) (types.Task, error) {
 	}
 	return value, err
 }
+
+// CancelTask marks a pending task as canceled. A running task is marked for
+// cancellation and its executor will record the final canceled state when it
+// returns; this keeps the database transition atomic without killing an
+// arbitrary process from the controller.
+func (s *Store) CancelTask(id string) (types.Task, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return types.Task{}, err
+	}
+	defer tx.Rollback()
+	var data []byte
+	var task types.Task
+	if err := tx.QueryRow(`SELECT data FROM tasks WHERE id=?`, id).Scan(&data); err != nil {
+		return task, err
+	}
+	if err := decode(data, &task); err != nil {
+		return task, err
+	}
+	switch task.Status {
+	case types.TaskPending:
+		now := time.Now().UTC()
+		task.Status = types.TaskCanceled
+		task.CancelRequested = true
+		task.FinishedAt = &now
+	case types.TaskRunning:
+		task.CancelRequested = true
+	default:
+		return task, errors.New("task is already finished")
+	}
+	if err := putTask(tx, task); err != nil {
+		return task, err
+	}
+	if err := tx.Commit(); err != nil {
+		return task, err
+	}
+	return task, nil
+}
+
+func (s *Store) CloneTask(id, idempotencyKey string, expectedDigest string) (types.Task, error) {
+	original, err := s.GetTask(id)
+	if err != nil {
+		return types.Task{}, err
+	}
+	if original.Status != types.TaskFailed && original.Status != types.TaskCanceled {
+		return types.Task{}, errors.New("only failed or canceled tasks can be retried")
+	}
+	if idempotencyKey == "" {
+		return types.Task{}, errors.New("retry idempotency key is required")
+	}
+	if existing, findErr := s.FindTaskByIdempotency(idempotencyKey); findErr == nil {
+		return existing, nil
+	}
+	randomID := fmt.Sprintf("retry_%d", time.Now().UnixNano())
+	task := types.Task{ID: randomID, ServerID: original.ServerID, Action: original.Action, Args: original.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: idempotencyKey, ExpectedStateDigest: expectedDigest, Attempt: original.Attempt + 1, RetryOf: original.ID}
+	if err := s.PutTask(task); err != nil {
+		return types.Task{}, err
+	}
+	return task, nil
+}
 func (s *Store) BatchShouldStop(batchID string, threshold int) (bool, error) {
 	if batchID == "" || threshold <= 0 || threshold > 100 {
 		return false, nil
 	}
 	var completed, failed int
-	err := s.db.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status IN ('success','failed') THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) FROM tasks WHERE batch_id=?`, batchID).Scan(&completed, &failed)
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status IN ('success','failed','canceled') THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) FROM tasks WHERE batch_id=?`, batchID).Scan(&completed, &failed)
 	return completed > 0 && failed*100/completed >= threshold, err
 }
 func (s *Store) ClaimPendingTask(serverID string, failureStopPercent int) (types.Task, error) {
@@ -259,7 +405,7 @@ func (s *Store) ClaimPendingTask(serverID string, failureStopPercent int) (types
 	for _, task := range candidates {
 		var completed, failed int
 		if task.BatchID != "" && failureStopPercent > 0 {
-			if err := tx.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status IN ('success','failed') THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) FROM tasks WHERE batch_id=?`, task.BatchID).Scan(&completed, &failed); err != nil {
+			if err := tx.QueryRow(`SELECT COALESCE(SUM(CASE WHEN status IN ('success','failed','canceled') THEN 1 ELSE 0 END),0), COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0) FROM tasks WHERE batch_id=?`, task.BatchID).Scan(&completed, &failed); err != nil {
 				return types.Task{}, err
 			}
 			if completed > 0 && failed*100/completed >= failureStopPercent {

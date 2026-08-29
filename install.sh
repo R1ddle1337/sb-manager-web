@@ -58,7 +58,19 @@ fi
 binary_url=${SBM_WEB_BINARY_URL:-"https://github.com/$REPO/releases/download/v$VERSION/sb-web-linux-$asset_arch"}
 checksum_url=${SBM_WEB_CHECKSUM_URL:-"https://github.com/$REPO/releases/download/v$VERSION/SHA256SUMS"}
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+install_changed=0
+previous_binary="$tmp/previous-sb-web"
+rollback_install() {
+  if [[ "$install_changed" == 1 && -f "$previous_binary" && -d "$LIB_DIR" ]]; then
+    install -m 0755 "$previous_binary" "$LIB_DIR/.sb-web.rollback" 2>/dev/null || return 0
+    mv -f "$LIB_DIR/.sb-web.rollback" "$LIB_DIR/sb-web" 2>/dev/null || true
+    if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload >/dev/null 2>&1 || true
+      systemctl restart sb-manager-web.service >/dev/null 2>&1 || true
+    fi
+  fi
+}
+trap 'rollback_install; rm -rf "$tmp"' EXIT
 if [[ -f "$binary_url" ]]; then
   cp -p "$binary_url" "$tmp/sb-web"
 else
@@ -84,18 +96,24 @@ if [[ "$SERVICE_USER" != root ]] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
   if command -v useradd >/dev/null 2>&1; then useradd --system --gid "$SERVICE_USER" --home-dir "$VAR_DIR" --shell "$nologin" "$SERVICE_USER"
   elif command -v adduser >/dev/null 2>&1; then adduser -S -D -H -h "$VAR_DIR" -s "$nologin" -G "$SERVICE_USER" "$SERVICE_USER"; fi
 fi
-install -m 0755 "$tmp/sb-web" "$LIB_DIR/sb-web"
+if [[ -f "$LIB_DIR/sb-web" ]]; then
+  cp -p "$LIB_DIR/sb-web" "$previous_binary"
+fi
+install -m 0755 "$tmp/sb-web" "$LIB_DIR/.sb-web.new"
+mv -f "$LIB_DIR/.sb-web.new" "$LIB_DIR/sb-web"
+install_changed=1
 ln -sfn "$LIB_DIR/sb-web" "$BIN_DIR/sb-web"
 if [[ ! -e "$ETC_DIR/config.json" ]]; then
   install -m 0600 /dev/stdin "$ETC_DIR/config.json" <<EOF_CONFIG
 {
   "listen": "127.0.0.1:9091",
   "sb_path": "$(command -v sb)",
+  "state_file": "/etc/sb-manager/state.json",
   "data_dir": "$VAR_DIR",
   "database": "$VAR_DIR/web.db",
   "log_dir": "$LOG_DIR",
   "helper_socket": "/run/sb-manager-web/helper.sock",
-  "tls": {"enabled": false, "cert_file": "", "key_file": ""},
+  "tls": {"enabled": false, "cert_file": "", "key_file": "", "client_ca_file": "", "client_ca_key_file": "", "require_agent_mtls": false},
   "agent": {"enabled": false, "controller_url": "", "identity_file": "$VAR_DIR/agent-identity/ed25519.json", "heartbeat_interval": "30s"},
   "tasks": {"default_timeout": "10m", "batch_concurrency": 1, "failure_stop_percent": 25}
 }
@@ -234,4 +252,5 @@ if [[ "$NO_START" == 0 ]]; then
     echo '未发现 systemd/OpenRC；请手动运行 sb-web server。' >&2
   fi
 fi
+install_changed=0
 echo "sb-manager-web $VERSION 安装完成。"

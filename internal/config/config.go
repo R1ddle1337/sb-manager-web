@@ -10,9 +10,12 @@ import (
 )
 
 type TLSConfig struct {
-	Enabled  bool   `json:"enabled"`
-	CertFile string `json:"cert_file"`
-	KeyFile  string `json:"key_file"`
+	Enabled          bool   `json:"enabled"`
+	CertFile         string `json:"cert_file"`
+	KeyFile          string `json:"key_file"`
+	ClientCAFile     string `json:"client_ca_file,omitempty"`
+	ClientCAKeyFile  string `json:"client_ca_key_file,omitempty"`
+	RequireAgentMTLS bool   `json:"require_agent_mtls"`
 }
 
 type AgentConfig struct {
@@ -33,6 +36,7 @@ type TaskConfig struct {
 type Config struct {
 	Listen       string      `json:"listen"`
 	SBPath       string      `json:"sb_path"`
+	StateFile    string      `json:"state_file"`
 	DataDir      string      `json:"data_dir"`
 	Database     string      `json:"database"`
 	LogDir       string      `json:"log_dir"`
@@ -46,6 +50,7 @@ func Defaults() Config {
 	return Config{
 		Listen:       "127.0.0.1:9091",
 		SBPath:       "/usr/local/bin/sb",
+		StateFile:    "/etc/sb-manager/state.json",
 		DataDir:      "/var/lib/sb-manager-web",
 		Database:     "/var/lib/sb-manager-web/web.db",
 		LogDir:       "/var/log/sb-manager-web",
@@ -82,11 +87,14 @@ func Load(path string) (Config, error) {
 		}
 		cfg.Tasks.DefaultTimeout = parsed
 	}
-	if cfg.Listen == "" || cfg.SBPath == "" || cfg.DataDir == "" || cfg.Database == "" {
-		return Config{}, errors.New("listen, sb_path, data_dir and database are required")
+	if cfg.Listen == "" || cfg.SBPath == "" || cfg.DataDir == "" || cfg.Database == "" || cfg.StateFile == "" {
+		return Config{}, errors.New("listen, sb_path, state_file, data_dir and database are required")
 	}
 	if cfg.Tasks.Concurrency < 1 || cfg.Tasks.Concurrency > 32 {
 		return Config{}, errors.New("tasks.batch_concurrency must be between 1 and 32")
+	}
+	if cfg.TLS.RequireAgentMTLS && !cfg.TLS.Enabled {
+		return Config{}, errors.New("tls.require_agent_mtls requires tls.enabled")
 	}
 	return cfg, nil
 }
