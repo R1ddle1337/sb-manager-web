@@ -84,6 +84,27 @@ func TestNodeSetCommandIncludesProtocolFields(t *testing.T) {
 	}
 }
 
+func TestOperationsCommandMappings(t *testing.T) {
+	tests := []struct {
+		action string
+		args   map[string]any
+		want   string
+	}{
+		{"node.enable-all", map[string]any{"tag": "edge"}, "node enable-all --tag edge"},
+		{"node.disable-all", map[string]any{"region": "hk"}, "node disable-all --region hk"},
+		{"share.all", nil, "share all"},
+		{"config.diff", nil, "--json config diff"},
+		{"firewall.ufw-allow", nil, "firewall ufw-allow --yes"},
+		{"service.restart", nil, "restart"},
+	}
+	for _, test := range tests {
+		args, err := ActionCommand(test.action, test.args)
+		if err != nil || strings.Join(args, " ") != test.want {
+			t.Fatalf("%s => %v (%v), want %s", test.action, args, err, test.want)
+		}
+	}
+}
+
 func TestRunnerTimeout(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-sb")

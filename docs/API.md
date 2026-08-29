@@ -23,6 +23,17 @@ GET /api/v1/bbr/status
 GET /api/v1/hy2-buffer/status
 GET /api/v1/realm
 GET /api/v1/logs
+GET /api/v1/traffic
+GET /api/v1/health
+GET /api/v1/firewall
+GET /api/v1/firewall/ports
+GET /api/v1/mux
+GET /api/v1/tunnel
+GET /api/v1/notify
+GET /api/v1/settings
+GET /api/v1/config/validate
+GET /api/v1/config/diff
+GET /api/v1/logs?target=all&lines=200
 ```
 
 ## Servers

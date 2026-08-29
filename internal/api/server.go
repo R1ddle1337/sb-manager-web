@@ -80,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/", s.page)
 	mux.HandleFunc("/servers/", s.detailPage)
 	mux.HandleFunc("/settings/users", s.usersPage)
+	mux.HandleFunc("/operations", s.operationsPage)
 	mux.HandleFunc("/login", s.login)
 	mux.HandleFunc("/logout", s.logout)
 	mux.HandleFunc("/static/", s.static)
@@ -158,6 +159,19 @@ func (s *Server) usersPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tmpl, err := template.ParseFS(web.Files, "templates/users.html")
+	if err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+		return
+	}
+	_ = tmpl.Execute(w, nil)
+}
+
+func (s *Server) operationsPage(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.session(r); !ok {
+		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+	tmpl, err := template.ParseFS(web.Files, "templates/operations.html")
 	if err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
@@ -341,10 +355,30 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.singleJSONAction(w, r, "hy2-buffer.status")
 	case "/api/v1/realm":
 		s.singleJSONAction(w, r, "realm.status")
+	case "/api/v1/traffic":
+		s.singleJSONAction(w, r, "traffic.status")
+	case "/api/v1/health":
+		s.singleJSONAction(w, r, "health.status")
+	case "/api/v1/firewall":
+		s.singleJSONAction(w, r, "firewall.status")
+	case "/api/v1/firewall/ports":
+		s.singleJSONAction(w, r, "firewall.ports")
+	case "/api/v1/mux":
+		s.singleJSONAction(w, r, "mux.status")
+	case "/api/v1/tunnel":
+		s.singleJSONAction(w, r, "tunnel.status")
+	case "/api/v1/notify":
+		s.singleJSONAction(w, r, "notify.status")
+	case "/api/v1/settings":
+		s.singleJSONAction(w, r, "settings.show")
+	case "/api/v1/config/validate":
+		s.singleJSONAction(w, r, "config.validate")
+	case "/api/v1/config/diff":
+		s.singleJSONAction(w, r, "config.diff")
 	case "/api/v1/certificates":
 		s.singleJSONAction(w, r, "cert.list")
 	case "/api/v1/logs":
-		s.plainAction(w, r, "logs")
+		s.logs(w, r)
 	case "/api/v1/servers":
 		s.servers(w, r)
 	case "/api/v1/enrollment":
@@ -427,6 +461,31 @@ func (s *Server) plainAction(w http.ResponseWriter, r *http.Request, action stri
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"output": truncate(redact(result.Stdout), 65536)})
+}
+
+func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	args := map[string]any{}
+	if target := r.URL.Query().Get("target"); target != "" {
+		args["target"] = target
+	}
+	if lines := r.URL.Query().Get("lines"); lines != "" {
+		value, err := strconv.Atoi(lines)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "lines 无效", nil)
+			return
+		}
+		args["lines"] = float64(value)
+	}
+	result, err := s.runLocal("logs", args)
+	if err != nil {
+		writeRunnerError(w, err, result)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"target": args["target"], "output": truncate(redact(result.Stdout), 65536)})
 }
 
 func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {

@@ -73,6 +73,34 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return JSONArgs("status"), nil
 	case "nodes.list":
 		return JSONArgs("node", "list"), nil
+	case "node.rotate":
+		id, err := requiredID(args, "id")
+		if err != nil {
+			return nil, err
+		}
+		return []string{"node", "rotate", id}, nil
+	case "node.enable-all", "node.disable-all":
+		verb := "enable-all"
+		if action == "node.disable-all" {
+			verb = "disable-all"
+		}
+		command := []string{"node", verb}
+		if tag, _ := args["tag"].(string); tag != "" {
+			if tag = safeArgument(tag, 128); tag == "" {
+				return nil, errors.New("invalid tag")
+			}
+			command = append(command, "--tag", tag)
+		}
+		if region, _ := args["region"].(string); region != "" {
+			if region = safeArgument(region, 128); region == "" {
+				return nil, errors.New("invalid region")
+			}
+			command = append(command, "--region", region)
+		}
+		if len(command) == 2 {
+			return nil, errors.New("tag or region is required")
+		}
+		return command, nil
 	case "core.capabilities":
 		return JSONArgs("core", "capabilities"), nil
 	case "bbr.status":
@@ -115,7 +143,21 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 	case "health.check":
 		return JSONArgs("health", "check"), nil
 	case "logs":
-		return []string{"logs", "all", "100"}, nil
+		target, _ := args["target"].(string)
+		if target == "" {
+			target = "all"
+		}
+		if target != "all" && target != "singbox" && target != "tunnel" && target != "nginx" {
+			return nil, errors.New("invalid log target")
+		}
+		lines := float64(100)
+		if value, ok := args["lines"].(float64); ok {
+			lines = value
+		}
+		if lines < 1 || lines > 1000 || lines != float64(int(lines)) {
+			return nil, errors.New("invalid log lines")
+		}
+		return []string{"logs", target, fmt.Sprintf("%d", int(lines))}, nil
 	case "node.enable", "node.disable", "node.delete":
 		id, ok := args["id"].(string)
 		if !ok || !safeID.MatchString(id) {
@@ -145,7 +187,40 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 			}
 			command = append(command, "--user", userID)
 		}
+		if qr, _ := args["qr"].(bool); qr {
+			command = append(command, "--qr")
+		}
 		return command, nil
+	case "share.all":
+		return []string{"share", "all"}, nil
+	case "export.outbounds":
+		return []string{"export", "outbounds"}, nil
+	case "subscription.list":
+		return JSONArgs("subscription", "list"), nil
+	case "subscription.status":
+		return JSONArgs("subscription", "status"), nil
+	case "subscription.create":
+		duration, _ := args["duration"].(string)
+		mode, _ := args["mode"].(string)
+		if duration == "" {
+			duration = "7d"
+		}
+		if mode == "" {
+			mode = "mixed"
+		}
+		if duration != "7d" && duration != "24h" {
+			return nil, errors.New("invalid subscription duration")
+		}
+		if mode != "mixed" && mode != "tun" {
+			return nil, errors.New("invalid subscription mode")
+		}
+		return []string{"subscription", "create", duration, mode}, nil
+	case "subscription.revoke":
+		token, _ := args["token"].(string)
+		if len(token) < 16 || len(token) > 256 || strings.ContainsAny(token, "\r\n\x00") {
+			return nil, errors.New("invalid subscription token")
+		}
+		return []string{"subscription", "revoke", token}, nil
 	case "users.list":
 		nodeID, err := requiredID(args, "node_id")
 		if err != nil {
@@ -196,9 +271,128 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return command, nil
 	case "cert.renew":
 		return []string{"cert", "renew"}, nil
+	case "cert.inspect":
+		domain, _ := args["domain"].(string)
+		if !safeDomain.MatchString(domain) {
+			return nil, errors.New("invalid certificate domain")
+		}
+		return JSONArgs("cert", "inspect", domain), nil
+	case "health.status":
+		return JSONArgs("health", "status"), nil
+	case "health.enable":
+		return []string{"health", "enable"}, nil
+	case "health.disable":
+		return []string{"health", "disable"}, nil
+	case "config.validate":
+		return JSONArgs("config", "validate"), nil
+	case "config.diff":
+		return JSONArgs("config", "diff"), nil
+	case "firewall.status":
+		return JSONArgs("firewall", "status"), nil
+	case "firewall.ports":
+		return JSONArgs("firewall", "ports"), nil
+	case "firewall.ufw-allow":
+		return []string{"firewall", "ufw-allow", "--yes"}, nil
+	case "firewall.clear-iptables":
+		return []string{"firewall", "clear-iptables", "--yes"}, nil
+	case "mux.status":
+		return JSONArgs("mux", "status"), nil
+	case "mux.enable":
+		port, _ := args["port"].(float64)
+		if port == 0 {
+			return []string{"mux", "enable"}, nil
+		}
+		if port < 1 || port > 65535 || port != float64(int(port)) {
+			return nil, errors.New("invalid mux port")
+		}
+		return []string{"mux", "enable", fmt.Sprintf("%d", int(port))}, nil
+	case "mux.disable":
+		return []string{"mux", "disable"}, nil
+	case "tunnel.status":
+		return JSONArgs("tunnel", "status"), nil
+	case "tunnel.stop":
+		return []string{"tunnel", "stop"}, nil
+	case "tunnel.refresh":
+		return []string{"tunnel", "refresh"}, nil
+	case "notify.status":
+		return JSONArgs("notify", "status"), nil
+	case "notify.test":
+		return []string{"notify", "test"}, nil
+	case "notify.disable":
+		return []string{"notify", "disable"}, nil
+	case "traffic.status":
+		command := JSONArgs("traffic", "status")
+		if nodeID, _ := args["node_id"].(string); nodeID != "" {
+			if !safeID.MatchString(nodeID) {
+				return nil, errors.New("invalid node id")
+			}
+			command = append(command, nodeID)
+		}
+		return command, nil
+	case "traffic.set":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		command := []string{"traffic", "set", nodeID}
+		for _, field := range []struct{ key, flag string }{{"quota", "--quota"}, {"reset_day", "--reset-day"}, {"rate", "--rate"}, {"upload_rate", "--upload-rate"}, {"download_rate", "--download-rate"}, {"quota_mode", "--quota-mode"}} {
+			if value, ok := args[field.key].(string); ok && value != "" {
+				if safeArgument(value, 64) == "" {
+					return nil, errors.New("invalid traffic value")
+				}
+				command = append(command, field.flag, value)
+			}
+		}
+		if len(command) == 3 {
+			return nil, errors.New("traffic.set requires a field")
+		}
+		return command, nil
+	case "traffic.disable", "traffic.remove", "traffic.reset":
+		nodeID, err := requiredID(args, "node_id")
+		if err != nil {
+			return nil, err
+		}
+		command := []string{"traffic", strings.TrimPrefix(action, "traffic."), nodeID}
+		if action == "traffic.reset" {
+			command = append(command, "--yes")
+		}
+		return command, nil
+	case "traffic.reconcile":
+		return []string{"traffic", "reconcile"}, nil
+	case "health.configure":
+		command := []string{"health", "configure"}
+		for _, field := range []struct{ key, flag string }{{"disk_free", "--disk-free"}, {"memory_max", "--memory-max"}, {"load_per_core", "--load-per-core"}, {"inode_max", "--inode-max"}, {"fd_max", "--fd-max"}, {"banned_warn", "--banned-warn"}, {"restart_warn", "--restart-warn"}} {
+			if value, ok := args[field.key].(string); ok && value != "" {
+				if safeArgument(value, 32) == "" {
+					return nil, errors.New("invalid health value")
+				}
+				command = append(command, field.flag, value)
+			}
+		}
+		if len(command) == 2 {
+			return nil, errors.New("health.configure requires a field")
+		}
+		return command, nil
+	case "settings.show":
+		return JSONArgs("settings", "show"), nil
+	case "settings.detect-ip":
+		return []string{"settings", "detect-ip"}, nil
+	case "service.restart":
+		return []string{"restart"}, nil
+	case "doctor.network":
+		return []string{"doctor", "--network"}, nil
+	case "repair":
+		return []string{"repair", "--safe"}, nil
 	default:
 		return nil, fmt.Errorf("unsupported action: %s", action)
 	}
+}
+
+func safeArgument(value string, max int) string {
+	if len(value) > max || strings.ContainsAny(value, "\r\n\x00") {
+		return ""
+	}
+	return value
 }
 
 func requiredID(args map[string]any, key string) (string, error) {
