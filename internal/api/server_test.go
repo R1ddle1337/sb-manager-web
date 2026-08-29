@@ -86,6 +86,15 @@ func TestLoginStatusAndAction(t *testing.T) {
 	if response.StatusCode != http.StatusOK || !strings.Contains(string(data), `"sing_box"`) {
 		t.Fatalf("status response: %d %s", response.StatusCode, data)
 	}
+	metricsResponse, err := client.Get(server.URL + "/api/v1/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	metricsData, _ := io.ReadAll(metricsResponse.Body)
+	metricsResponse.Body.Close()
+	if metricsResponse.StatusCode != http.StatusOK || !strings.Contains(string(metricsData), "sb_manager_up 1") {
+		t.Fatalf("metrics response: %d %s", metricsResponse.StatusCode, metricsData)
+	}
 	realmResponse, err := client.Get(server.URL + "/api/v1/realm")
 	if err != nil {
 		t.Fatal(err)

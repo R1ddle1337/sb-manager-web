@@ -34,6 +34,7 @@ GET /api/v1/settings
 GET /api/v1/config/validate
 GET /api/v1/config/diff
 GET /api/v1/logs?target=all&lines=200
+GET /api/v1/metrics
 GET /api/v1/shares
 GET /api/v1/subscriptions
 GET /api/v1/subscriptions/status
@@ -67,6 +68,12 @@ Supported system actions include status/capabilities reads plus:
 - `bbr.enable`, `bbr.disable`
 - `hy2-buffer.enable`, `hy2-buffer.disable`
 - `realm.enable`, `realm.disable`, `realm.status`
+- `node.enable-all`, `node.disable-all`, `node.rotate`, `share.all`
+- `subscription.create`, `subscription.list`, `subscription.status`, `subscription.revoke`
+- `traffic.status`, `traffic.set`, `traffic.disable`, `traffic.remove`, `traffic.reset`, `traffic.reconcile`
+- `health.status`, `health.enable`, `health.disable`, `health.configure`
+- `config.validate`, `config.diff`, `firewall.status`, `firewall.ports`, `firewall.ufw-allow`
+- `mux.status`, `mux.enable`, `mux.disable`, `mux.route.*`, `tunnel.*`, `notify.*`, `settings.*`
 - `core.check`, `core.update`, `core.rollback`
 - `backup.create`
 - `health.check`
