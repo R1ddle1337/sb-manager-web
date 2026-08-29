@@ -13,6 +13,8 @@ OPENRC_DIR=${SBM_WEB_OPENRC_DIR:-/etc/init.d}
 SERVICE_USER=${SBM_WEB_SERVICE_USER:-sbweb}
 VERSION=${SBM_WEB_VERSION:-latest}
 REPO=${SBM_WEB_REPO:-R1ddle1337/sb-manager-web}
+SB_INSTALL_URL=${SBM_WEB_SB_INSTALL_URL:-https://raw.githubusercontent.com/R1ddle1337/sb-manager/main/install.sh}
+INIT_SYSTEM=${SBM_WEB_INIT_SYSTEM:-auto}
 NO_START=0
 AGENT_CONTROLLER=''
 AGENT_TOKEN=''
@@ -27,9 +29,76 @@ usage() {
   SBM_WEB_CHECKSUM_URL     SHA256SUMS 地址
   SBM_WEB_SKIP_VERIFY=1    跳过摘要校验（仅开发环境）
   SBM_WEB_PREFIX/LIB/ETC/VAR/LOG  覆盖安装路径
+  SBM_WEB_SB_INSTALL_URL   sb-manager 独立安装器地址
+  SBM_WEB_AUTO_INSTALL_SB=0  禁用缺失依赖时的自动安装
+  SBM_WEB_INIT_SYSTEM      强制 systemd/openrc（默认自动检测）
 
 --agent 会安装二进制、完成一次性注册并只启动 Agent 服务。
 EOF
+}
+
+install_sb_manager() {
+  local installer_dir installer rc=0
+  installer_dir=$(mktemp -d)
+  installer="$installer_dir/install.sh"
+  printf '未发现 sb-manager，正在通过独立项目安装器自动安装…\n'
+  if [[ -f "$SB_INSTALL_URL" ]]; then
+    cp -p "$SB_INSTALL_URL" "$installer"
+  elif curl --fail --silent --show-error --location \
+    --retry 3 --retry-delay 2 --connect-timeout 15 \
+    --proto '=https' --tlsv1.2 "$SB_INSTALL_URL" -o "$installer"; then
+    :
+  else
+    rc=$?
+    rm -rf "$installer_dir"
+    return "$rc"
+  fi
+  if [[ "$NO_START" == 1 ]]; then
+    if bash "$installer" --no-menu --no-start; then :; else rc=$?; fi
+  elif bash "$installer" --no-menu; then
+    :
+  else
+    rc=$?
+  fi
+  rm -rf "$installer_dir"
+  [[ "$rc" == 0 ]] || return "$rc"
+  hash -r
+  command -v sb >/dev/null 2>&1 || {
+    echo 'sb-manager 安装器执行完成，但 PATH 中仍未找到 sb。' >&2
+    return 1
+  }
+}
+
+detect_init_system() {
+  case "$INIT_SYSTEM" in
+    systemd|openrc|none) printf '%s\n' "$INIT_SYSTEM"; return 0;;
+    auto) ;;
+    *) echo "SBM_WEB_INIT_SYSTEM 无效：$INIT_SYSTEM" >&2; return 1;;
+  esac
+  if [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
+    printf 'systemd\n'
+  elif command -v rc-update >/dev/null 2>&1 \
+    && command -v rc-service >/dev/null 2>&1 \
+    && { [[ -e /run/openrc/softlevel ]] || command -v openrc-run >/dev/null 2>&1; }; then
+    printf 'openrc\n'
+  else
+    printf 'none\n'
+  fi
+}
+
+cleanup_legacy_openrc_services() {
+  local name path
+  for name in sb-manager-web sb-manager-web-helper sb-manager-web-agent; do
+    path="$OPENRC_DIR/$name"
+    [[ -f "$path" ]] || continue
+    if grep -Fqx '#!/sbin/openrc-run' "$path" \
+      && grep -Fq 'sb-manager' "$path" \
+      && grep -Fq 'WebUI' "$path" \
+      && grep -Fq 'sb-web' "$path"; then
+      rm -f "$path"
+      printf '已清理 systemd 主机上旧版误写的 OpenRC 服务：%s\n' "$path"
+    fi
+  done
 }
 
 while (($#)); do
@@ -44,8 +113,17 @@ done
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo '请使用 root/sudo 运行。' >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo '缺少 curl。' >&2; exit 1; }
+if ! command -v sb >/dev/null 2>&1; then
+  if [[ ${SBM_WEB_AUTO_INSTALL_SB:-1} == 1 ]]; then
+    install_sb_manager
+  else
+    echo '未发现 sb-manager，且 SBM_WEB_AUTO_INSTALL_SB=0 禁止了自动安装。' >&2
+    exit 1
+  fi
+fi
 command -v sha256sum >/dev/null 2>&1 || { echo '缺少 sha256sum。' >&2; exit 1; }
-command -v sb >/dev/null 2>&1 || { echo '未发现 sb-manager，请先安装 sb-manager。' >&2; exit 1; }
+sb_path=$(command -v sb)
+init_system=$(detect_init_system)
 
 arch=$(uname -m)
 case "$arch" in
@@ -113,7 +191,7 @@ if [[ ! -e "$ETC_DIR/config.json" ]]; then
   install -m 0600 /dev/stdin "$ETC_DIR/config.json" <<EOF_CONFIG
 {
   "listen": "127.0.0.1:9091",
-  "sb_path": "$(command -v sb)",
+  "sb_path": "$sb_path",
   "state_file": "/etc/sb-manager/state.json",
   "data_dir": "$VAR_DIR",
   "database": "$VAR_DIR/web.db",
@@ -131,7 +209,9 @@ EOF_CONFIG
 fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$ETC_DIR" "$VAR_DIR" "$LOG_DIR" 2>/dev/null || true
 chmod 0750 "$ETC_DIR" "$VAR_DIR" "$LOG_DIR"
-if [[ -d "$SYSTEMD_DIR" ]]; then
+if [[ "$init_system" == systemd ]]; then
+  mkdir -p "$SYSTEMD_DIR"
+  cleanup_legacy_openrc_services
   install -m 0644 /dev/stdin "$SYSTEMD_DIR/sb-manager-web.service" <<EOF_SYSTEMD
 [Unit]
 Description=sb-manager Go WebUI
@@ -201,7 +281,8 @@ ReadWritePaths=$ETC_DIR /etc/sb-manager /etc/sysctl.d $VAR_DIR /var/lib/sb-manag
 WantedBy=multi-user.target
 EOF_AGENT_SYSTEMD
 fi
-if [[ -d "$OPENRC_DIR" ]]; then
+if [[ "$init_system" == openrc ]]; then
+  mkdir -p "$OPENRC_DIR"
   install -m 0755 /dev/stdin "$OPENRC_DIR/sb-manager-web" <<EOF_OPENRC
 #!/sbin/openrc-run
 name="sb-manager-web"
@@ -251,16 +332,16 @@ fi
 if [[ "$NO_START" == 0 ]]; then
   if [[ -n "$AGENT_CONTROLLER" ]]; then
     "$BIN_DIR/sb-web" join "$AGENT_CONTROLLER" "$AGENT_TOKEN" --config "$ETC_DIR/config.json"
-  elif [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null 2>&1; then
+  elif [[ "$init_system" == systemd ]] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
     systemctl enable --now sb-manager-web-helper.service sb-manager-web.service
-  elif command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then
+  elif [[ "$init_system" == openrc ]] && command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then
     rc-update add sb-manager-web-helper default || true
     rc-update add sb-manager-web default || true
     rc-service sb-manager-web-helper start
     rc-service sb-manager-web start
   else
-    echo '未发现 systemd/OpenRC；请手动运行 sb-web server。' >&2
+    echo '未发现正在运行的 systemd/OpenRC；请手动运行 sb-web server。' >&2
   fi
 fi
 install_changed=0

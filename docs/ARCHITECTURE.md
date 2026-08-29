@@ -15,6 +15,12 @@ Browser
 
 The source of truth remains `/etc/sb-manager/state.json` and its protected secret/certificate files.
 
+The repositories and release lifecycles remain separate. If `sb` is missing,
+the Web bootstrap downloads and invokes sb-manager's public installer; it does
+not vendor sb-manager source, service definitions, or installation logic. A
+deployment can pin that upstream installer independently or provision `sb`
+before running the Web installer.
+
 On first initialization the controller creates a random owner username (with
 the `admin` role) and a random password; neither the username nor password is
 hard-coded to `admin`. The credentials are printed once by `sb-web init` or
