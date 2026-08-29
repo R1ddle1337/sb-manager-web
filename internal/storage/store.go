@@ -28,6 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_batch ON tasks(batch_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key) WHERE idempotency_key <> '';
 CREATE TABLE IF NOT EXISTS enrollments (hash TEXT PRIMARY KEY, expires_at TEXT NOT NULL, used INTEGER NOT NULL, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, data BLOB NOT NULL);
 PRAGMA user_version=1;
 `
 
@@ -152,6 +153,74 @@ func (s *Store) DeleteUser(username string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *Store) PutAPIToken(token types.APIToken) error {
+	data, err := encode(token)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT INTO api_tokens(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data`, token.ID, data)
+	return err
+}
+
+func (s *Store) GetAPIToken(id string) (types.APIToken, error) {
+	var data []byte
+	var token types.APIToken
+	err := s.db.QueryRow(`SELECT data FROM api_tokens WHERE id=?`, id).Scan(&data)
+	if err == nil {
+		err = decode(data, &token)
+	}
+	return token, err
+}
+
+func (s *Store) ListAPITokens() ([]types.APIToken, error) {
+	rows, err := s.db.Query(`SELECT data FROM api_tokens ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := []types.APIToken{}
+	for rows.Next() {
+		var data []byte
+		var token types.APIToken
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		if err := decode(data, &token); err != nil {
+			return nil, err
+		}
+		token.Hash = ""
+		values = append(values, token)
+	}
+	return values, rows.Err()
+}
+
+func (s *Store) DeleteAPIToken(id string) error {
+	_, err := s.db.Exec(`DELETE FROM api_tokens WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) FindAPITokenByHash(hash string) (types.APIToken, error) {
+	rows, err := s.db.Query(`SELECT data FROM api_tokens`)
+	if err != nil {
+		return types.APIToken{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var data []byte
+		var token types.APIToken
+		if err := rows.Scan(&data); err != nil {
+			return types.APIToken{}, err
+		}
+		if err := decode(data, &token); err != nil {
+			return types.APIToken{}, err
+		}
+		if token.Hash == hash {
+			return token, nil
+		}
+	}
+	return types.APIToken{}, sql.ErrNoRows
 }
 
 func (s *Store) PutSession(value types.Session) error {

@@ -59,10 +59,22 @@ type EnrollmentToken struct {
 }
 
 type User struct {
-	Username string    `json:"username"`
-	Hash     string    `json:"hash"`
-	Created  time.Time `json:"created"`
-	Role     string    `json:"role,omitempty"`
+	Username           string    `json:"username"`
+	Hash               string    `json:"hash"`
+	Created            time.Time `json:"created"`
+	Role               string    `json:"role,omitempty"`
+	TOTPSecret         string    `json:"totp_secret,omitempty"`
+	TOTPEnabled        bool      `json:"totp_enabled,omitempty"`
+	RecoveryCodeHashes []string  `json:"recovery_code_hashes,omitempty"`
+}
+
+type APIToken struct {
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Hash      string     `json:"hash"`
+	Role      string     `json:"role"`
+	CreatedAt time.Time  `json:"created_at"`
+	LastUsed  *time.Time `json:"last_used,omitempty"`
 }
 
 type Session struct {

@@ -9,6 +9,8 @@
 - Go 静态 WebUI，页面资源嵌入二进制
 - 登录、Argon2id 密码、Session、CSRF
 - 首次安装随机管理员用户名和随机密码（不使用固定 `admin` 账号名）
+- TOTP 双因素认证、一次性恢复码和 API Token（指标读取）
+- sb-manager 备份列表、上传与恢复向导（128 MiB 上限）
 - 本机 `sb` CLI 安全调用和命令白名单
 - 状态、节点、核心能力、BBR、Hysteria2 UDP 缓冲区查看
 - 协议节点创建覆盖 VMess、Shadowsocks、AnyTLS、Hysteria2、Trojan、TUIC、VLESS、NaiveProxy、ShadowTLS、Snell v5/v6；含 1.14 Gecko/指纹/BBR profile 及 Hysteria Realm 参数

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/R1ddle1337/sb-manager-web/internal/storage"
+	"github.com/R1ddle1337/sb-manager-web/internal/types"
 )
 
 func TestPasswordAndSession(t *testing.T) {
@@ -64,5 +65,45 @@ func TestEnsureOwnerUsesRandomUsername(t *testing.T) {
 	second, created, err := manager.EnsureOwner()
 	if err != nil || created || second.Username != "" {
 		t.Fatalf("owner was created twice: %#v created=%v err=%v", second, created, err)
+	}
+}
+
+func TestTOTPAndAPIToken(t *testing.T) {
+	store, err := storage.Open(t.TempDir() + "/web.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	m := New(store)
+	if err := store.PutUser(types.User{Username: "owner", Hash: "hash", Created: time.Now().UTC(), Role: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	secret, _, err := m.SetupTOTP("owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := TOTPCode(secret, time.Now())
+	if err != nil || !VerifyTOTP(secret, code, time.Now()) {
+		t.Fatalf("totp verification failed: %v", err)
+	}
+	codes, err := m.EnableTOTP("owner", code)
+	if err != nil || len(codes) != 8 {
+		t.Fatalf("totp enable failed: %v", err)
+	}
+	if err := m.DisableTOTP("owner", codes[0]); err != nil {
+		t.Fatal(err)
+	}
+	metadata, raw, err := m.CreateAPIToken("metrics", "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.ID == "" || raw == "" {
+		t.Fatal("api token was empty")
+	}
+	if _, ok := m.AuthenticateAPIToken(raw); !ok {
+		t.Fatal("api token did not authenticate")
+	}
+	if _, ok := m.AuthenticateAPIToken("wrong"); ok {
+		t.Fatal("invalid api token authenticated")
 	}
 }

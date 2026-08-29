@@ -11,6 +11,9 @@ POST /login
 POST /logout
 GET  /api/v1/session
 POST /api/v1/password
+POST /api/v1/2fa/setup
+POST /api/v1/2fa/enable
+POST /api/v1/2fa/disable
 ```
 
 ## Local read endpoints
@@ -133,7 +136,13 @@ GET  /api/v1/users
 POST /api/v1/users
 PATCH /api/v1/users/{username}
 DELETE /api/v1/users/{username}
+GET  /api/v1/tokens
+POST /api/v1/tokens
+DELETE /api/v1/tokens/{id}
 POST /api/v1/database/backup
+GET  /api/v1/backups
+POST /api/v1/backups
+POST /api/v1/backups/{name}/restore
 ```
 
 Batch request:

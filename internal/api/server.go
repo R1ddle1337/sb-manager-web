@@ -218,6 +218,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(r.FormValue("username"))
 	password := r.FormValue("password")
+	otp := r.FormValue("otp")
 	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if ip == "" {
 		ip = r.RemoteAddr
@@ -230,6 +231,20 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		s.recordLoginFailure(ip)
 		http.Error(w, "用户名或密码错误", http.StatusUnauthorized)
 		return
+	}
+	user, userErr := s.store.GetUser(username)
+	if userErr != nil {
+		s.recordLoginFailure(ip)
+		http.Error(w, "用户名或密码错误", http.StatusUnauthorized)
+		return
+	}
+	if user.TOTPEnabled && !auth.VerifyTOTP(user.TOTPSecret, otp, time.Now().UTC()) {
+		if !auth.ConsumeRecoveryCode(&user, otp) {
+			s.recordLoginFailure(ip)
+			http.Error(w, "双因素验证码错误", http.StatusUnauthorized)
+			return
+		}
+		_ = s.store.PutUser(user)
 	}
 	s.clearLoginFailures(ip)
 	session, err := s.auth.NewSession(username)
@@ -326,6 +341,14 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.agentAPI(w, r)
 		return
 	}
+	if r.URL.Path == "/api/v1/metrics" && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		if _, ok := s.auth.AuthenticateAPIToken(strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))); ok {
+			s.metrics(w, r)
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "API_TOKEN_INVALID", "API Token 无效或权限不足", nil)
+		return
+	}
 	session, ok := s.requireAuth(w, r)
 	if !ok {
 		return
@@ -340,9 +363,16 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.URL.Path {
 	case "/api/v1/session":
-		writeJSON(w, http.StatusOK, map[string]any{"username": session.Username, "role": s.auth.Role(session.Username), "csrf": session.CSRF})
+		user, _ := s.store.GetUser(session.Username)
+		writeJSON(w, http.StatusOK, map[string]any{"username": session.Username, "role": s.auth.Role(session.Username), "totp_enabled": user.TOTPEnabled, "csrf": session.CSRF})
 	case "/api/v1/password":
 		s.changePassword(w, r, session)
+	case "/api/v1/2fa/setup":
+		s.twoFASetup(w, r, session)
+	case "/api/v1/2fa/enable":
+		s.twoFAEnable(w, r, session)
+	case "/api/v1/2fa/disable":
+		s.twoFADisable(w, r, session)
 	case "/api/v1/status":
 		s.singleJSONAction(w, r, "status")
 	case "/api/v1/nodes":
@@ -413,13 +443,25 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.audit(w, r)
 	case "/api/v1/users":
 		s.usersAPI(w, r, session)
+	case "/api/v1/tokens":
+		s.tokensAPI(w, r, session)
 	case "/api/v1/database/backup":
 		s.databaseBackup(w, r, session)
+	case "/api/v1/backups":
+		s.backupsAPI(w, r, session)
 	case "/api/v1/batch/actions":
 		s.batchAction(w, r)
 	case "/api/v1/batch/preflight":
 		s.batchPreflight(w, r)
 	default:
+		if strings.HasPrefix(r.URL.Path, "/api/v1/backups/") {
+			s.backupsAPI(w, r, session)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/v1/tokens/") {
+			s.tokensAPI(w, r, session)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/certificates/") {
 			s.certificateInspect(w, r)
 			return
@@ -482,6 +524,111 @@ func (s *Server) databaseBackup(w http.ResponseWriter, r *http.Request, session 
 	writeJSON(w, http.StatusCreated, map[string]any{"path": destination})
 }
 
+func (s *Server) backupsAPI(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以管理备份", nil)
+		return
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 3 && r.Method == http.MethodGet {
+		entries, err := os.ReadDir(s.cfg.BackupDir)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		values := []map[string]any{}
+		for _, entry := range entries {
+			if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".tar.gz") && !strings.HasSuffix(entry.Name(), ".age")) {
+				continue
+			}
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				continue
+			}
+			values = append(values, map[string]any{"name": entry.Name(), "size": info.Size(), "modified_at": info.ModTime().UTC()})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"backups": values})
+		return
+	}
+	if len(parts) == 3 && r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 128<<20)
+		if err := r.ParseMultipartForm(128 << 20); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "备份上传失败", nil)
+			return
+		}
+		file, header, err := r.FormFile("backup")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "缺少 backup 文件", nil)
+			return
+		}
+		defer file.Close()
+		name := filepath.Base(header.Filename)
+		if name == "." || name == ".." || (!strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".age")) || strings.ContainsAny(name, "\r\n\x00") {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "备份文件名或格式无效", nil)
+			return
+		}
+		if err := os.MkdirAll(s.cfg.BackupDir, 0700); err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		tmp, err := os.CreateTemp(s.cfg.BackupDir, ".upload-*")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		tmpName := tmp.Name()
+		defer os.Remove(tmpName)
+		written, copyErr := io.Copy(tmp, io.LimitReader(file, (128<<20)+1))
+		if copyErr != nil {
+			tmp.Close()
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", copyErr.Error(), nil)
+			return
+		}
+		if written > 128<<20 {
+			tmp.Close()
+			writeError(w, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "备份文件超过 128 MiB", nil)
+			return
+		}
+		if err := tmp.Close(); err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		destination := filepath.Join(s.cfg.BackupDir, name)
+		if _, err := os.Stat(destination); err == nil {
+			writeError(w, http.StatusConflict, "BACKUP_EXISTS", "同名备份已存在", nil)
+			return
+		}
+		if err := os.Rename(tmpName, destination); err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		s.recordAudit(session.Username, "backup.upload", nil, nil, "success")
+		writeJSON(w, http.StatusCreated, map[string]any{"name": name})
+		return
+	}
+	if len(parts) == 5 && r.Method == http.MethodPost && parts[4] == "restore" {
+		name := parts[3]
+		if filepath.Base(name) != name || (!strings.HasSuffix(name, ".tar.gz") && !strings.HasSuffix(name, ".age")) {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "备份名称无效", nil)
+			return
+		}
+		archive := filepath.Join(s.cfg.BackupDir, name)
+		if _, err := os.Stat(archive); err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "备份不存在", nil)
+			return
+		}
+		result, runErr := s.runLocal("restore", map[string]any{"archive": archive})
+		if runErr != nil {
+			writeRunnerError(w, runErr, result)
+			return
+		}
+		s.recordAudit(session.Username, "backup.restore", nil, nil, "success")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": redact(result.Stdout)})
+		return
+	}
+	writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET、POST", nil)
+}
+
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, session types.Session) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
@@ -501,6 +648,60 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, session 
 	}
 	_ = s.auth.DeleteSession(session.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "login_required": true})
+}
+
+func (s *Server) twoFASetup(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	secret, uri, err := s.auth.SetupTOTP(session.Username)
+	if err != nil {
+		writeError(w, http.StatusConflict, "2FA_SETUP_FAILED", err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"secret": secret, "otpauth_uri": uri, "message": "请在验证器中添加后调用 enable 接口确认"})
+}
+
+func (s *Server) twoFAEnable(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		Code string `json:"code"`
+	}
+	if err := decodeBody(r, &request); err != nil || request.Code == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "code 必填", nil)
+		return
+	}
+	codes, err := s.auth.EnableTOTP(session.Username, request.Code)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "2FA_ENABLE_FAILED", err.Error(), nil)
+		return
+	}
+	s.recordAudit(session.Username, "2fa.enable", nil, nil, "success")
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "recovery_codes": codes})
+}
+
+func (s *Server) twoFADisable(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
+		return
+	}
+	var request struct {
+		Code string `json:"code"`
+	}
+	if err := decodeBody(r, &request); err != nil || request.Code == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "code 必填", nil)
+		return
+	}
+	if err := s.auth.DisableTOTP(session.Username, request.Code); err != nil {
+		writeError(w, http.StatusBadRequest, "2FA_DISABLE_FAILED", err.Error(), nil)
+		return
+	}
+	s.recordAudit(session.Username, "2fa.disable", nil, nil, "success")
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 }
 
 func (s *Server) plainAction(w http.ResponseWriter, r *http.Request, action string) {
@@ -1071,6 +1272,51 @@ func (s *Server) usersAPI(w http.ResponseWriter, r *http.Request, session types.
 	}
 }
 
+func (s *Server) tokensAPI(w http.ResponseWriter, r *http.Request, session types.Session) {
+	if s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以管理 API Token", nil)
+		return
+	}
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	if len(parts) == 3 && r.Method == http.MethodGet {
+		values, err := s.store.ListAPITokens()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"tokens": values})
+		return
+	}
+	if len(parts) == 3 && r.Method == http.MethodPost {
+		var request struct {
+			Name string `json:"name"`
+			Role string `json:"role"`
+		}
+		if err := decodeBody(r, &request); err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		value, raw, err := s.auth.CreateAPIToken(request.Name, request.Role)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
+			return
+		}
+		s.recordAudit(session.Username, "api-token.create", nil, nil, "success")
+		writeJSON(w, http.StatusCreated, map[string]any{"token": raw, "metadata": value})
+		return
+	}
+	if len(parts) == 4 && r.Method == http.MethodDelete {
+		if err := s.store.DeleteAPIToken(parts[3]); err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		s.recordAudit(session.Username, "api-token.delete", nil, nil, "success")
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": parts[3]})
+		return
+	}
+	writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET、POST、DELETE", nil)
+}
+
 func (s *Server) recordAudit(actor, action string, serverIDs, taskIDs []string, result string) {
 	id, err := auth.RandomToken(10)
 	if err != nil {
@@ -1410,7 +1656,7 @@ func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request a
 
 func sensitiveAction(action string) bool {
 	switch action {
-	case "cert.setup-cloudflare", "notify.configure", "tunnel.fixed", "tunnel.set-token", "subscription.revoke":
+	case "cert.setup-cloudflare", "notify.configure", "tunnel.fixed", "tunnel.set-token", "subscription.revoke", "restore":
 		return true
 	default:
 		return false

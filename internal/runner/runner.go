@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -153,6 +154,12 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 		return []string{"doctor", "--repair-safe"}, nil
 	case "backup.create":
 		return []string{"backup"}, nil
+	case "restore":
+		archive, _ := args["archive"].(string)
+		if archive == "" || strings.ContainsAny(archive, "\r\n\x00") || (filepath.Ext(archive) != ".age" && !strings.HasSuffix(archive, ".tar.gz")) {
+			return nil, errors.New("invalid backup archive")
+		}
+		return []string{"restore", archive, "--yes"}, nil
 	case "health.check":
 		return JSONArgs("health", "check"), nil
 	case "logs":

@@ -31,7 +31,7 @@ test -f "$ROOT/etc/systemd/system/sb-manager-web-helper.service"
 test -x "$ROOT/etc/init.d/sb-manager-web"
 test -x "$ROOT/etc/init.d/sb-manager-web-helper"
 grep -Fq "$ROOT/usr/local/bin/sb-web" "$ROOT/etc/systemd/system/sb-manager-web.service"
-jq -e --arg dir "$ROOT/var/lib/sb-manager-web" '.data_dir==$dir and .database==($dir+"/web.db")' "$ROOT/etc/sb-manager-web/config.json" >/dev/null
+jq -e --arg dir "$ROOT/var/lib/sb-manager-web" '.data_dir==$dir and .database==($dir+"/web.db") and .backup_dir=="/var/lib/sb-manager/backups"' "$ROOT/etc/sb-manager-web/config.json" >/dev/null
 [[ $(stat -c '%U' "$ROOT/var/lib/sb-manager-web") == daemon ]]
 grep -Fq 'User=daemon' "$ROOT/etc/systemd/system/sb-manager-web.service"
 "$ROOT/usr/local/bin/sb-web" version | grep -Fq 'sb-manager-web'

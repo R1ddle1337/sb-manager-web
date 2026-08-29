@@ -40,6 +40,7 @@ type Config struct {
 	DataDir      string      `json:"data_dir"`
 	Database     string      `json:"database"`
 	LogDir       string      `json:"log_dir"`
+	BackupDir    string      `json:"backup_dir"`
 	HelperSocket string      `json:"helper_socket"`
 	TLS          TLSConfig   `json:"tls"`
 	Agent        AgentConfig `json:"agent"`
@@ -54,6 +55,7 @@ func Defaults() Config {
 		DataDir:      "/var/lib/sb-manager-web",
 		Database:     "/var/lib/sb-manager-web/web.db",
 		LogDir:       "/var/log/sb-manager-web",
+		BackupDir:    "/var/lib/sb-manager/backups",
 		HelperSocket: "/run/sb-manager-web/helper.sock",
 		Agent: AgentConfig{
 			IdentityFile:      "/var/lib/sb-manager-web/agent-identity/ed25519.key",
@@ -87,8 +89,8 @@ func Load(path string) (Config, error) {
 		}
 		cfg.Tasks.DefaultTimeout = parsed
 	}
-	if cfg.Listen == "" || cfg.SBPath == "" || cfg.DataDir == "" || cfg.Database == "" || cfg.StateFile == "" {
-		return Config{}, errors.New("listen, sb_path, state_file, data_dir and database are required")
+	if cfg.Listen == "" || cfg.SBPath == "" || cfg.StateFile == "" || cfg.DataDir == "" || cfg.Database == "" || cfg.BackupDir == "" {
+		return Config{}, errors.New("listen, sb_path, state_file, data_dir, database and backup_dir are required")
 	}
 	if cfg.Tasks.Concurrency < 1 || cfg.Tasks.Concurrency > 32 {
 		return Config{}, errors.New("tasks.batch_concurrency must be between 1 and 32")
