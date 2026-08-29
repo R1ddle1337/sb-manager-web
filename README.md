@@ -20,6 +20,7 @@
 - 节点新增/编辑/启停/删除、用户、分享链接和证书操作 API
 - 服务器/节点详情页，以及 admin/operator/viewer 角色接口
 - SQLite 在线备份、数据库健康检查和主动/被动控制端部署路径
+- 任务筛选/详情抽屉、灰度进度统计、浅色主题和自动刷新
 - systemd/OpenRC 服务文件
 - root helper Unix Socket 权限隔离（Web 服务使用 `sbweb` 用户）
 - amd64/arm64/armv7 交叉编译

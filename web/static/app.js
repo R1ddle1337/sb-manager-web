@@ -11,7 +11,13 @@
   const showError = (message, success = false) => { $('alerts').innerHTML = `<div class="notice ${success ? 'success' : 'error'}">${escapeHTML(message)}</div>`; };
   const escapeHTML = (value) => text(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const setState = (id, value, good) => { const el = $(id); el.textContent = value; el.className = good ? 'ok' : 'bad'; };
+  let loading = false;
+  let allTasks = [];
+  let taskFilter = 'all';
+  let refreshTimer = null;
   async function load() {
+    if (loading) return;
+    loading = true;
     $('alerts').innerHTML = '';
     try {
       const [status, nodes, bbr, hy2, capabilities, tasks, servers, realm] = await Promise.all([
@@ -27,10 +33,12 @@
       $('core-version').textContent = `核心：${capabilities.version || '未知'}`;
       $('status-output').textContent = JSON.stringify(status, null, 2);
       renderRealm(realm);
+      syncCapabilityFields(capabilities);
       renderNodes(list);
-      renderTasks(tasks.tasks || []);
+      allTasks = tasks.tasks || [];
+      renderTasks(allTasks);
       renderServers(servers.servers || []);
-    } catch (error) { showError(error.message); }
+    } catch (error) { showError(error.message); } finally { loading = false; }
   }
   function renderRealm(realm) {
     const value = realm.realm || realm;
@@ -47,9 +55,14 @@
     document.querySelectorAll('.delete-action').forEach((button) => button.addEventListener('click', () => { if (window.confirm(`确认删除节点 ${button.dataset.nodeId}？`)) nodeActionWith(button, 'delete'); }));
   }
   function renderTasks(tasks) {
-    if (!tasks.length) { $('tasks-list').textContent = '暂无任务'; return; }
-    $('tasks-list').innerHTML = `<table><thead><tr><th>时间</th><th>服务器</th><th>操作</th><th>状态</th><th>尝试</th><th>错误</th><th>操作</th></tr></thead><tbody>${tasks.slice(-20).reverse().map((task) => `<tr><td>${escapeHTML(task.created_at)}</td><td>${escapeHTML(task.server_id)}</td><td><code>${escapeHTML(task.action)}</code></td><td>${escapeHTML(task.status)}</td><td>${escapeHTML(task.attempt || 0)}</td><td>${escapeHTML(task.error || '')}</td><td>${task.status === 'pending' || task.status === 'running' ? `<button class="task-action" data-task-id="${escapeHTML(task.id)}" data-task-operation="cancel">取消</button>` : ''}${task.status === 'failed' || task.status === 'canceled' ? ` <button class="task-action" data-task-id="${escapeHTML(task.id)}" data-task-operation="retry">重试</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
+    const filtered = taskFilter === 'all' ? tasks : tasks.filter((task) => task.status === taskFilter);
+    const completed = tasks.filter((task) => ['success', 'failed', 'canceled'].includes(task.status)).length;
+    const failed = tasks.filter((task) => task.status === 'failed').length;
+    $('batch-progress').textContent = tasks.length ? `最近 ${tasks.length} 项 · 已完成 ${completed} · 失败 ${failed}` : '';
+    if (!filtered.length) { $('tasks-list').textContent = '暂无匹配任务'; return; }
+    $('tasks-list').innerHTML = `<table><thead><tr><th>时间</th><th>服务器</th><th>操作</th><th>状态</th><th>尝试</th><th>错误</th><th>操作</th></tr></thead><tbody>${filtered.slice(-20).reverse().map((task) => `<tr><td>${escapeHTML(task.created_at)}</td><td>${escapeHTML(task.server_id)}</td><td><code>${escapeHTML(task.action)}</code></td><td>${escapeHTML(task.status)}</td><td>${escapeHTML(task.attempt || 0)}</td><td>${escapeHTML(task.error || '')}</td><td><button class="task-detail" data-task-id="${escapeHTML(task.id)}">详情</button>${task.status === 'pending' || task.status === 'running' ? ` <button class="task-action" data-task-id="${escapeHTML(task.id)}" data-task-operation="cancel">取消</button>` : ''}${task.status === 'failed' || task.status === 'canceled' ? ` <button class="task-action" data-task-id="${escapeHTML(task.id)}" data-task-operation="retry">重试</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
     document.querySelectorAll('.task-action').forEach((button) => button.addEventListener('click', () => taskAction(button)));
+    document.querySelectorAll('.task-detail').forEach((button) => button.addEventListener('click', () => showTaskDetail(button.dataset.taskId)));
   }
   function renderServers(servers) {
     if (!servers.length) { $('servers-list').textContent = '暂无服务器'; return; }
@@ -93,6 +106,19 @@
       showError(operation === 'cancel' ? '任务已取消。' : '重试任务已创建。', true);
       setTimeout(load, 500);
     } catch (error) { showError(error.message); } finally { button.disabled = false; }
+  }
+  function showTaskDetail(taskID) {
+    const task = allTasks.find((candidate) => candidate.id === taskID);
+    if (!task) return;
+    $('task-drawer-title').textContent = `${task.action} · ${task.server_id}`;
+    $('task-drawer-body').textContent = JSON.stringify({ status: task.status, attempt: task.attempt || 0, error: task.error || '', output: task.output || '' }, null, 2);
+    $('task-drawer').hidden = false;
+  }
+  function syncCapabilityFields(capabilities) {
+    const version = String(capabilities.version || '');
+    const supported = /^1\.(1[4-9]|[2-9][0-9])(?:\.|$)/.test(version) || version.includes('dev');
+    document.querySelectorAll('option[value="gecko"]').forEach((option) => { option.disabled = !supported; });
+    document.querySelectorAll('[data-14-only]').forEach((field) => { field.title = supported ? '当前核心支持' : '当前核心可能不支持，请先更新 sing-box'; });
   }
   $('add-node-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -203,6 +229,26 @@
   };
   protocolSelect.addEventListener('change', syncProtocolFields);
   syncProtocolFields();
+  const taskTools = document.createElement('div');
+  taskTools.className = 'task-tools';
+  taskTools.innerHTML = '<select id="task-filter" aria-label="任务状态筛选"><option value="all">全部状态</option><option value="pending">等待中</option><option value="running">执行中</option><option value="success">成功</option><option value="failed">失败</option><option value="canceled">已取消</option></select><span id="batch-progress" class="muted"></span>';
+  $('tasks').querySelector('.panel-header').appendChild(taskTools);
+  $('task-filter').addEventListener('change', (event) => { taskFilter = event.target.value; renderTasks(allTasks); });
+  const drawer = document.createElement('aside');
+  drawer.id = 'task-drawer';
+  drawer.className = 'task-drawer';
+  drawer.hidden = true;
+  drawer.innerHTML = '<div class="drawer-header"><strong id="task-drawer-title">任务详情</strong><button id="task-drawer-close" class="icon-button" aria-label="关闭详情">×</button></div><pre id="task-drawer-body" class="output"></pre>';
+  document.body.appendChild(drawer);
+  $('task-drawer-close').addEventListener('click', () => { drawer.hidden = true; });
+  const topbarTools = document.createElement('div');
+  topbarTools.className = 'topbar-tools';
+  topbarTools.innerHTML = '<button id="theme-toggle" class="icon-button" title="切换主题" aria-label="切换主题">☼</button><select id="refresh-interval" title="自动刷新间隔"><option value="0">手动刷新</option><option value="30">30 秒</option><option value="60">60 秒</option></select>';
+  $('refresh').parentElement.insertBefore(topbarTools, $('refresh'));
+  const storedTheme = localStorage.getItem('sbweb-theme') || 'dark';
+  document.documentElement.dataset.theme = storedTheme;
+  $('theme-toggle').addEventListener('click', () => { const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; document.documentElement.dataset.theme = theme; localStorage.setItem('sbweb-theme', theme); });
+  $('refresh-interval').addEventListener('change', (event) => { if (refreshTimer) clearInterval(refreshTimer); const seconds = Number(event.target.value); if (seconds > 0) refreshTimer = setInterval(load, seconds * 1000); });
   const navTitles = { overview: '总览', servers: '服务器', nodes: '节点与用户', 'quick-actions': '快捷操作', realm: 'Hysteria Realm', certificates: '证书', tasks: '任务与审计' };
   const closeSidebar = () => { $('sidebar').classList.remove('open'); $('scrim').hidden = true; $('menu-toggle').setAttribute('aria-expanded', 'false'); };
   $('menu-toggle').addEventListener('click', () => { const open = !$('sidebar').classList.contains('open'); $('sidebar').classList.toggle('open', open); $('scrim').hidden = !open; $('menu-toggle').setAttribute('aria-expanded', String(open)); });
