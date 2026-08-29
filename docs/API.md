@@ -36,6 +36,7 @@ GET /api/v1/config/diff
 GET /api/v1/logs?target=all&lines=200
 GET /api/v1/metrics
 GET /api/v1/shares
+GET /api/v1/exports/outbounds
 GET /api/v1/subscriptions
 GET /api/v1/subscriptions/status
 POST /api/v1/subscriptions

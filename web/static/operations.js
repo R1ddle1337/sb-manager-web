@@ -13,9 +13,10 @@
   $('load-logs').addEventListener('click', async () => { try { const target = $('log-target').value; const result = await json(`/api/v1/logs?target=${encodeURIComponent(target)}&lines=200`); $('logs-output').textContent = result.output || ''; } catch (error) { $('logs-output').textContent = error.message; notice(error.message); } });
   const sharing = document.createElement('article');
   sharing.className = 'panel';
-  sharing.innerHTML = '<div class="panel-header"><div><p class="eyebrow">CLIENT ACCESS</p><h2>分享与订阅</h2></div><button class="secondary-button" id="share-all">生成全部分享</button></div><div class="operation-actions"><button class="secondary-button" id="subscription-list">查看订阅</button><button class="primary-button" id="subscription-create">创建 7 天订阅</button></div><form id="subscription-revoke" class="inline-form"><input name="token" placeholder="撤销订阅令牌"><button class="secondary-button" type="submit">撤销订阅</button></form><pre id="sharing-output" class="output">分享链接和订阅令牌只在本次响应中显示，不会写入控制端任务记录。</pre>';
+  sharing.innerHTML = '<div class="panel-header"><div><p class="eyebrow">CLIENT ACCESS</p><h2>分享与订阅</h2></div><button class="secondary-button" id="share-all">生成全部分享</button></div><div class="operation-actions"><button class="secondary-button" id="subscription-list">查看订阅</button><button class="primary-button" id="subscription-create">创建 7 天订阅</button><button class="secondary-button" id="export-outbounds">导出客户端 Outbounds</button></div><form id="subscription-revoke" class="inline-form"><input name="token" placeholder="撤销订阅令牌"><button class="secondary-button" type="submit">撤销订阅</button></form><pre id="sharing-output" class="output">分享链接和订阅令牌只在本次响应中显示，不会写入控制端任务记录。</pre>';
   document.querySelector('.operations-grid').appendChild(sharing);
   $('share-all').addEventListener('click', async () => { try { const result = await json('/api/v1/shares'); $('sharing-output').textContent = result.output || ''; } catch (error) { notice(error.message); } });
+  $('export-outbounds').addEventListener('click', async () => { try { const result = await json('/api/v1/exports/outbounds'); $('sharing-output').textContent = result.output || ''; } catch (error) { notice(error.message); } });
   $('subscription-list').addEventListener('click', async () => { try { const result = await json('/api/v1/subscriptions'); $('sharing-output').textContent = result.output || ''; } catch (error) { notice(error.message); } });
   $('subscription-create').addEventListener('click', async () => { try { const result = await json('/api/v1/subscriptions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ duration: '7d', mode: 'mixed' }) }); $('sharing-output').textContent = result.output || ''; notice('订阅已创建，请立即复制令牌。', true); } catch (error) { notice(error.message); } });
   $('subscription-revoke').addEventListener('submit', async (event) => { event.preventDefault(); const token = new FormData(event.target).get('token'); if (!token || !window.confirm('确认撤销这个订阅？')) return; try { const result = await json('/api/v1/subscriptions', { method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ token }) }); $('sharing-output').textContent = result.output || ''; event.target.reset(); notice('订阅已撤销。', true); } catch (error) { notice(error.message); } });
@@ -31,5 +32,12 @@
   document.querySelector('.operations-grid').appendChild(settings);
   settings.querySelector('[data-read]').addEventListener('click', () => read('settings'));
   $('settings-form').addEventListener('submit', async (event) => { event.preventDefault(); const form = new FormData(event.target); try { await action('settings.outbound-ip', { strategy: form.get('strategy') }); if (form.get('address')) await action('settings.address', { address: form.get('address') }); if (form.get('dns_value')) await action('settings.dns', { kind: form.get('dns_kind'), value: form.get('dns_value') }); } catch (error) { notice(error.message); } });
+  const certificates = document.createElement('article');
+  certificates.className = 'panel';
+  certificates.innerHTML = '<div class="panel-header"><div><p class="eyebrow">CERTIFICATES</p><h2>证书状态</h2></div><button class="secondary-button" id="cert-refresh">刷新</button></div><div class="operation-actions"><button class="primary-button" data-action="cert.renew">续签全部证书</button></div><pre id="cert-output" class="output">读取中…</pre>';
+  document.querySelector('.operations-grid').appendChild(certificates);
+  $('cert-refresh').addEventListener('click', async () => { try { const result = await json('/api/v1/certificates'); $('cert-output').textContent = JSON.stringify(result, null, 2); } catch (error) { notice(error.message); } });
+  certificates.querySelector('[data-action]').addEventListener('click', () => action('cert.renew'));
+  $('cert-refresh').click();
   read('health'); read('firewall'); read('traffic');
 })();

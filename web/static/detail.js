@@ -27,6 +27,16 @@
     $('nodes-list').innerHTML = list.length ? `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th><th>编辑</th></tr></thead><tbody>${list.map((node) => `<tr><td><code>${escapeHTML(node.id)}</code></td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="ok">● 启用</span>' : '<span class="bad">● 停用</span>'}</td><td><a href="/servers/${server}/nodes/${encodeURIComponent(node.id)}">编辑 →</a></td></tr>`).join('')}</tbody></table>` : '暂无节点';
     $('nodes-json').href = `/api/v1/servers/${server}/nodes`;
   }
+  if (!nodeID && serverID !== 'local') {
+    const revoke = document.createElement('button');
+    revoke.className = 'secondary-button danger-button';
+    revoke.textContent = '撤销 Agent';
+    document.querySelector('.detail-header').appendChild(revoke);
+    revoke.addEventListener('click', async () => {
+      if (!window.confirm('确认撤销该服务器的 Agent 身份？')) return;
+      try { await json(`/api/v1/servers/${server}`, { method: 'DELETE', headers: { 'X-CSRF-Token': csrf() } }); window.location.href = '/'; } catch (error) { show(error.message); }
+    });
+  }
   async function loadNode() {
     const [node, users] = await Promise.all([json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}`), json(`/api/v1/servers/${server}/nodes/${encodeURIComponent(nodeID)}/users`).catch(() => ({ users: [] }))]);
     const value = node.node || node;

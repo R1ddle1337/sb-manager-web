@@ -383,6 +383,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		s.logs(w, r)
 	case "/api/v1/shares":
 		s.shares(w, r)
+	case "/api/v1/exports/outbounds":
+		s.exportsOutbounds(w, r)
 	case "/api/v1/subscriptions":
 		s.subscriptions(w, r)
 	case "/api/v1/subscriptions/status":
@@ -536,6 +538,20 @@ func (s *Server) shares(w http.ResponseWriter, r *http.Request) {
 	// Share URIs are credentials. This endpoint is deliberately synchronous and
 	// never creates a persisted task or audit payload; the browser must opt in
 	// to display the one-time response.
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
+}
+
+func (s *Server) exportsOutbounds(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET", nil)
+		return
+	}
+	result, err := s.runLocal("export.outbounds", nil)
+	if err != nil {
+		writeRunnerError(w, err, result)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
 }
@@ -903,6 +919,23 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		server.AgentPublicKey = ""
 		writeJSON(w, http.StatusOK, server)
+		return
+	}
+	if len(parts) == 4 && r.Method == http.MethodDelete {
+		if serverID == types.ServerLocal {
+			writeError(w, http.StatusConflict, "LOCAL_SERVER_PROTECTED", "不能删除本机服务器", nil)
+			return
+		}
+		if _, err := s.store.GetServer(serverID); err != nil {
+			writeError(w, http.StatusNotFound, "NOT_FOUND", "服务器不存在", nil)
+			return
+		}
+		if err := s.store.DeleteServer(serverID); err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		s.recordAudit("admin", "server.revoke", []string{serverID}, nil, "success")
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": serverID})
 		return
 	}
 	if len(parts) == 5 && parts[4] == "status" && r.Method == http.MethodGet {
