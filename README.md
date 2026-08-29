@@ -19,6 +19,9 @@
 - systemd/OpenRC 服务文件
 - root helper Unix Socket 权限隔离（Web 服务使用 `sbweb` 用户）
 - amd64/arm64/armv7 交叉编译
+- 参考 Cli-Proxy-API-Management-Center 信息架构的响应式控制台（侧栏、KPI、工作台和审计区）
+
+前端布局、视觉规范和后续迭代边界见 [`docs/FRONTEND_DESIGN.md`](docs/FRONTEND_DESIGN.md)。
 
 完整开发设计当前维护在 [`sb-manager/docs/SB_MANAGER_WEB_DEVELOPMENT.md`](https://github.com/R1ddle1337/sb-manager/blob/main/docs/SB_MANAGER_WEB_DEVELOPMENT.md)，新项目稳定后会同步维护本项目自身的架构文档。
 
