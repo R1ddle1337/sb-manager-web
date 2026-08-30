@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix `systemd` status 203/EXEC by making the program directory traversable and verifying execution as the unprivileged service user before startup.
 - Stop reusing stale ACME contact emails; public-IP issuance now registers without optional contact by default.
 - Make automatic ACME setup transactional so registration/issuance failures do not modify the active panel configuration.
 - Normalize ACME contact emails from interactive terminals before account registration.

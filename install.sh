@@ -138,6 +138,20 @@ cleanup_legacy_openrc_services() {
   done
 }
 
+service_user_can_execute_web() {
+  local command
+  if [[ "$SERVICE_USER" == root ]]; then
+    "$BIN_DIR/sb-web" version >/dev/null
+  elif command -v runuser >/dev/null 2>&1; then
+    runuser -u "$SERVICE_USER" -- "$BIN_DIR/sb-web" version >/dev/null
+  elif command -v su >/dev/null 2>&1; then
+    printf -v command '%q version' "$BIN_DIR/sb-web"
+    su -s /bin/sh "$SERVICE_USER" -c "$command" >/dev/null
+  else
+    return 0
+  fi
+}
+
 panel_has_tty() {
   [[ -t 0 || -t 1 || -t 2 ]]
 }
@@ -807,6 +821,7 @@ if [[ ${SBM_WEB_SKIP_VERIFY:-0} != 1 ]]; then
 fi
 
 mkdir -p "$LIB_DIR" "$BIN_DIR" "$ETC_DIR" "$VAR_DIR" "$LOG_DIR"
+chmod 0755 "$PREFIX" "$(dirname "$LIB_DIR")" "$LIB_DIR" "$BIN_DIR"
 if [[ "$SERVICE_USER" != root ]] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
   if command -v groupadd >/dev/null 2>&1; then groupadd --system "$SERVICE_USER" 2>/dev/null || true
   elif command -v addgroup >/dev/null 2>&1; then addgroup -S "$SERVICE_USER" 2>/dev/null || true; fi
@@ -819,6 +834,8 @@ if [[ -f "$LIB_DIR/sb-web" ]]; then
 fi
 install -m 0755 "$tmp/sb-web" "$LIB_DIR/.sb-web.new"
 mv -f "$LIB_DIR/.sb-web.new" "$LIB_DIR/sb-web"
+chown root:root "$LIB_DIR" "$LIB_DIR/sb-web" 2>/dev/null || true
+chmod 0755 "$LIB_DIR" "$LIB_DIR/sb-web"
 install_changed=1
 ln -sfn "$LIB_DIR/sb-web" "$BIN_DIR/sb-web"
 if [[ ! -e "$ETC_DIR/config.json" ]]; then
@@ -854,6 +871,11 @@ chmod 0750 "$ETC_DIR" "$VAR_DIR" "$LOG_DIR"
 if [[ "$panel_acme_enabled" == 1 ]]; then
   chown -R root:root "$PANEL_ACME_HOME" 2>/dev/null || true
   chmod 0700 "$PANEL_ACME_HOME"
+fi
+if ! service_user_can_execute_web; then
+  echo "$SERVICE_USER 无法执行 $BIN_DIR/sb-web；已取消启动服务。" >&2
+  if command -v namei >/dev/null 2>&1; then namei -l "$BIN_DIR/sb-web" >&2 || true; fi
+  exit 1
 fi
 if [[ "$init_system" == systemd ]]; then
   mkdir -p "$SYSTEMD_DIR"

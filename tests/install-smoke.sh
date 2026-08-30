@@ -4,7 +4,9 @@ set -Eeuo pipefail
 PROJECT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 ROOT=$(mktemp -d)
 trap 'rm -rf "$ROOT"' EXIT
-mkdir -p "$ROOT/bin" "$ROOT/etc/systemd/system" "$ROOT/etc/init.d"
+chmod 0755 "$ROOT"
+mkdir -p "$ROOT/bin" "$ROOT/etc/systemd/system" "$ROOT/etc/init.d" "$ROOT/usr/local"
+chmod 0755 "$ROOT/usr" "$ROOT/usr/local"
 cat >"$ROOT/fake-sb-installer" <<'EOF_INSTALLER'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -57,6 +59,9 @@ jq -e --arg dir "$ROOT/var/lib/sb-manager-web" '.data_dir==$dir and .database==(
 [[ $(stat -c '%U' "$ROOT/var/lib/sb-manager-web") == daemon ]]
 grep -Fq 'User=daemon' "$ROOT/etc/systemd/system/sb-manager-web.service"
 "$ROOT/usr/local/bin/sb-web" version | grep -Fq 'sb-manager-web'
+[[ $(stat -c '%a' "$ROOT/usr/local/lib/sb-manager-web") == 755 ]]
+[[ $(stat -c '%a' "$ROOT/usr/local/lib/sb-manager-web/sb-web") == 755 ]]
+runuser -u daemon -- "$ROOT/usr/local/bin/sb-web" version | grep -Fq 'sb-manager-web'
 
 set +e
 PATH="$ROOT/bin:/usr/bin:/bin" \
