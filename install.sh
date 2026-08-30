@@ -54,7 +54,7 @@ usage() {
   SBM_WEB_TLS_MODE         auto/none/self-signed/acme-http/acme-dns-cloudflare/existing
   SBM_WEB_TLS_DOMAIN       面板证书的域名或 IP
   SBM_WEB_TLS_EMAIL        ACME 账户邮箱
-  SBM_WEB_TLS_CERT_FILE/KEY_FILE  已有证书和私钥路径（existing）
+  SBM_WEB_TLS_CERT_FILE/KEY_FILE  已有证书和私钥绝对路径（existing）
   SBM_WEB_TLS_CF_TOKEN/ZONE_ID    Cloudflare DNS-01 凭据
   SBM_WEB_LISTEN           面板监听地址（默认 127.0.0.1:9091）
 
@@ -62,8 +62,8 @@ usage() {
   --panel-tls MODE          选择面板 TLS 流程
   --panel-domain DOMAIN     证书域名或 IP
   --panel-email EMAIL       ACME 账户邮箱
-  --panel-cert PATH         已有证书链
-  --panel-key PATH          已有私钥
+  --panel-cert PATH         已有证书链绝对路径
+  --panel-key PATH          已有私钥绝对路径
   --panel-cf-token TOKEN    Cloudflare API Token
   --panel-cf-zone-id ID     Cloudflare Zone ID（可选）
   --panel-listen ADDRESS    覆盖面板监听地址
@@ -247,8 +247,20 @@ panel_collect_tls_inputs() {
       fi
       ;;
     existing)
-      [[ -n "$PANEL_TLS_CERT_FILE" && -n "$PANEL_TLS_KEY_FILE" ]] || {
-        echo 'existing 流程需要 --panel-cert/--panel-key 或 SBM_WEB_TLS_CERT_FILE/KEY_FILE。' >&2
+      if [[ -z "$PANEL_TLS_CERT_FILE" ]]; then
+        panel_has_tty || { echo 'existing 流程需要 --panel-cert 或 SBM_WEB_TLS_CERT_FILE 指定证书绝对路径。' >&2; return 1; }
+        PANEL_TLS_CERT_FILE=$(panel_read_tty '证书链绝对路径：')
+      fi
+      if [[ -z "$PANEL_TLS_KEY_FILE" ]]; then
+        panel_has_tty || { echo 'existing 流程需要 --panel-key 或 SBM_WEB_TLS_KEY_FILE 指定私钥绝对路径。' >&2; return 1; }
+        PANEL_TLS_KEY_FILE=$(panel_read_tty '私钥绝对路径：')
+      fi
+      [[ "$PANEL_TLS_CERT_FILE" == /* && -f "$PANEL_TLS_CERT_FILE" ]] || {
+        echo "证书路径必须是存在的绝对路径：$PANEL_TLS_CERT_FILE" >&2
+        return 1
+      }
+      [[ "$PANEL_TLS_KEY_FILE" == /* && -f "$PANEL_TLS_KEY_FILE" ]] || {
+        echo "私钥路径必须是存在的绝对路径：$PANEL_TLS_KEY_FILE" >&2
         return 1
       }
       ;;

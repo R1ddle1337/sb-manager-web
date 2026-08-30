@@ -86,7 +86,7 @@ sudo bash install.sh --panel-tls acme-http --panel-domain panel.example.com --pa
 sudo bash install.sh --panel-tls acme-dns-cloudflare --panel-domain panel.example.com \
   --panel-email admin@example.com --panel-cf-token 'TOKEN'
 
-# 导入已有证书链和私钥
+# 导入已有证书链和私钥（交互安装选择此项时也会询问这两个绝对路径）
 sudo bash install.sh --panel-tls existing --panel-cert /path/fullchain.pem --panel-key /path/key.pem
 ```
 

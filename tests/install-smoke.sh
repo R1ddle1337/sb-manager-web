@@ -118,6 +118,25 @@ test -s "$ROOT/etc/sb-manager-web/tls/key.pem"
 jq -e --arg cert "$ROOT/etc/sb-manager-web/tls/fullchain.pem" --arg key "$ROOT/etc/sb-manager-web/tls/key.pem" '.tls.enabled == true and .tls.cert_file == $cert and .tls.key_file == $key' "$ROOT/etc/sb-manager-web/config.json" >/dev/null
 openssl x509 -in "$ROOT/etc/sb-manager-web/tls/fullchain.pem" -noout -checkip 127.0.0.1
 
+PATH="$ROOT/bin:/usr/bin:/bin" \
+SBM_WEB_VERSION=0.1.0 \
+SBM_WEB_BINARY_URL="$ROOT/sb-web" \
+SBM_WEB_SKIP_VERIFY=1 \
+SBM_WEB_TLS_MODE=existing \
+SBM_WEB_TLS_CERT_FILE="$ROOT/etc/sb-manager-web/tls/fullchain.pem" \
+SBM_WEB_TLS_KEY_FILE="$ROOT/etc/sb-manager-web/tls/key.pem" \
+SBM_WEB_PREFIX="$ROOT/usr/local" \
+SBM_WEB_ETC="$ROOT/etc/sb-manager-web" \
+SBM_WEB_VAR="$ROOT/var/lib/sb-manager-web" \
+SBM_WEB_LOG="$ROOT/var/log/sb-manager-web" \
+SBM_WEB_SYSTEMD_DIR="$ROOT/etc/systemd/system" \
+SBM_WEB_OPENRC_DIR="$ROOT/etc/init.d" \
+SBM_WEB_INIT_SYSTEM=systemd \
+SBM_WEB_SERVICE_USER=daemon \
+bash "$PROJECT/install.sh" --no-start >/dev/null
+test -s "$ROOT/etc/sb-manager-web/tls/fullchain.pem"
+test -s "$ROOT/etc/sb-manager-web/tls/key.pem"
+
 cat >"$ROOT/acme.sh" <<'EOF_ACME'
 #!/usr/bin/env bash
 set -Eeuo pipefail
