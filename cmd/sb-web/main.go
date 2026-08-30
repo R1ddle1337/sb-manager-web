@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,11 +24,30 @@ import (
 	"github.com/R1ddle1337/sb-manager-web/internal/helper"
 	"github.com/R1ddle1337/sb-manager-web/internal/runner"
 	"github.com/R1ddle1337/sb-manager-web/internal/storage"
+	"github.com/mattn/go-isatty"
 )
 
 const defaultConfigPath = "/etc/sb-manager-web/config.json"
 
+const (
+	webLibDir       = "/usr/local/lib/sb-manager-web"
+	webBinDir       = "/usr/local/bin"
+	webSystemdDir   = "/etc/systemd/system"
+	webOpenRCDir    = "/etc/init.d"
+	webPeriodicDir  = "/etc/periodic"
+	webService      = "sb-manager-web.service"
+	webHelperUnit   = "sb-manager-web-helper.service"
+	webAgentUnit    = "sb-manager-web-agent.service"
+	webRenewUnit    = "sb-manager-web-cert-renew.service"
+	webRenewTimer   = "sb-manager-web-cert-renew.timer"
+	webServiceName  = "sb-manager-web"
+	webHelperName   = "sb-manager-web-helper"
+	webAgentName    = "sb-manager-web-agent"
+	webRenewJobName = "sb-manager-web-cert-renew"
+)
+
 var version = "dev"
+var webUninstalled bool
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -37,9 +58,11 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return serve(args)
+		return menu()
 	}
 	switch args[0] {
+	case "menu":
+		return menu()
 	case "server", "enable":
 		if args[0] == "enable" {
 			return serviceAction("start")
@@ -59,6 +82,8 @@ func run(args []string) error {
 		return resetPassword(args[1:])
 	case "init":
 		return initialize(args[1:])
+	case "uninstall":
+		return uninstallWeb(args[1:])
 	case "version", "--version", "-V":
 		fmt.Printf("sb-manager-web %s\n", version)
 		return nil
@@ -204,6 +229,219 @@ func serviceActionFor(action, systemdUnit, openRCService string) error {
 		return runExternal("tail", "-n", "100", "/var/log/sb-manager-web/server.log")
 	}
 	return runExternal("rc-service", openRCService, action)
+}
+
+func menu() error {
+	if !isTerminal(os.Stdin) {
+		usage()
+		return errors.New("交互面板需要在 SSH/终端中运行；服务请使用 sb-web server")
+	}
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Println()
+		fmt.Println("╭──────────────── sb-manager-web ────────────────╮")
+		fmt.Println("  1. 查看面板状态与访问地址")
+		fmt.Println("  2. 启用并启动面板")
+		fmt.Println("  3. 停止并禁用面板")
+		fmt.Println("  4. 重启面板")
+		fmt.Println("  5. 查看面板日志")
+		fmt.Println("  6. 重置管理员密码")
+		fmt.Println("  7. 查看面板 TLS/证书配置")
+		fmt.Println("  8. 卸载 Web 面板")
+		fmt.Println("  0. 退出")
+		fmt.Println("╰───────────────────────────────────────────────╯")
+		fmt.Print("请选择 [0-8]: ")
+		line, err := reader.ReadString('\n')
+		if errors.Is(err, io.EOF) && strings.TrimSpace(line) == "" {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch strings.TrimSpace(line) {
+		case "0":
+			return nil
+		case "1":
+			if err := webStatus(); err != nil {
+				fmt.Fprintf(os.Stderr, "状态检查失败：%v\n", err)
+			}
+		case "2":
+			if err := serviceAction("start"); err != nil {
+				fmt.Fprintf(os.Stderr, "启动失败：%v\n", err)
+			}
+		case "3":
+			if err := serviceAction("disable"); err != nil {
+				fmt.Fprintf(os.Stderr, "停用失败：%v\n", err)
+			}
+		case "4":
+			if err := serviceAction("restart"); err != nil {
+				fmt.Fprintf(os.Stderr, "重启失败：%v\n", err)
+			}
+		case "5":
+			if err := serviceAction("logs"); err != nil {
+				fmt.Fprintf(os.Stderr, "日志读取失败：%v\n", err)
+			}
+		case "6":
+			if err := resetPassword(nil); err != nil {
+				fmt.Fprintf(os.Stderr, "密码重置失败：%v\n", err)
+			}
+		case "7":
+			if err := webTLSInfo(); err != nil {
+				fmt.Fprintf(os.Stderr, "TLS 配置读取失败：%v\n", err)
+			}
+		case "8":
+			if err := uninstallWeb(nil); err != nil {
+				fmt.Fprintf(os.Stderr, "卸载失败：%v\n", err)
+			}
+			if webUninstalled {
+				return nil
+			}
+		default:
+			fmt.Fprintln(os.Stderr, "选择无效，请输入 0-8。")
+		}
+	}
+}
+
+func isTerminal(file *os.File) bool {
+	return isatty.IsTerminal(file.Fd()) || isatty.IsCygwinTerminal(file.Fd())
+}
+
+func loadWebConfig() (config.Config, error) {
+	return config.Load(defaultConfigPath)
+}
+
+func webStatus() error {
+	cfg, err := loadWebConfig()
+	if err != nil {
+		return err
+	}
+	scheme := "http"
+	if cfg.TLS.Enabled {
+		scheme = "https"
+	}
+	fmt.Printf("面板监听：%s\n面板地址：%s://%s\n", cfg.Listen, scheme, cfg.Listen)
+	if _, err := os.Stat("/run/systemd/system"); err == nil {
+		output, commandErr := exec.Command("systemctl", "is-active", webService).CombinedOutput()
+		fmt.Printf("服务状态：%s", output)
+		if commandErr != nil {
+			return commandErr
+		}
+		return nil
+	}
+	output, commandErr := exec.Command("rc-service", webServiceName, "status").CombinedOutput()
+	fmt.Printf("服务状态：%s", output)
+	return commandErr
+}
+
+func webTLSInfo() error {
+	cfg, err := loadWebConfig()
+	if err != nil {
+		return err
+	}
+	if !cfg.TLS.Enabled {
+		fmt.Println("面板 HTTPS：未启用")
+		fmt.Println("配置方式：安装器 --panel-tls self-signed|acme-http|acme-dns-cloudflare|existing")
+		return nil
+	}
+	fmt.Printf("面板 HTTPS：已启用\n证书：%s\n私钥：%s\n", cfg.TLS.CertFile, cfg.TLS.KeyFile)
+	if info, statErr := os.Stat(cfg.TLS.CertFile); statErr == nil {
+		fmt.Printf("证书文件：%s\n", info.Mode().String())
+	} else {
+		fmt.Printf("证书文件状态：%v\n", statErr)
+	}
+	return nil
+}
+
+func uninstallWeb(args []string) error {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	configPath := fs.String("config", defaultConfigPath, "配置文件")
+	purge := fs.Bool("purge", false, "删除配置、数据库、证书、ACME 数据和日志")
+	assumeYes := fs.Bool("yes", false, "跳过确认")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 {
+		return errors.New("卸载 Web 面板需要 root，请使用 sudo sb-web uninstall")
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return fmt.Errorf("读取配置失败（为避免误删已取消）：%w", err)
+	}
+	if !*assumeYes {
+		message := "确认卸载 Web 面板程序？配置、数据库、证书和日志将保留 [y/N]："
+		if *purge {
+			message = "确认彻底卸载 Web 面板并删除配置、数据库、证书、ACME 数据和日志？请输入 DELETE："
+		}
+		fmt.Print(message)
+		reader := bufio.NewReader(os.Stdin)
+		answer, readErr := reader.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return readErr
+		}
+		answer = strings.TrimSpace(answer)
+		if (*purge && answer != "DELETE") || (!*purge && !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes")) {
+			fmt.Println("已取消卸载。")
+			return nil
+		}
+	}
+
+	if _, statErr := os.Stat("/run/systemd/system"); statErr == nil {
+		for _, unit := range []string{webRenewTimer, webAgentUnit, webService, webHelperUnit} {
+			_ = exec.Command("systemctl", "disable", "--now", unit).Run()
+		}
+	} else if _, statErr := os.Stat(filepath.Join(webOpenRCDir, webServiceName)); statErr == nil {
+		for _, service := range []string{webServiceName, webHelperName, webAgentName} {
+			_ = exec.Command("rc-service", service, "stop").Run()
+			_ = exec.Command("rc-update", "del", service, "default").Run()
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(webSystemdDir, webService),
+		filepath.Join(webSystemdDir, webHelperUnit),
+		filepath.Join(webSystemdDir, webAgentUnit),
+		filepath.Join(webSystemdDir, webRenewUnit),
+		filepath.Join(webSystemdDir, webRenewTimer),
+		filepath.Join(webOpenRCDir, webServiceName),
+		filepath.Join(webOpenRCDir, webHelperName),
+		filepath.Join(webOpenRCDir, webAgentName),
+		filepath.Join(webPeriodicDir, "daily", webRenewJobName),
+	} {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("删除 %s 失败：%w", path, removeErr)
+		}
+	}
+	_ = exec.Command("systemctl", "daemon-reload").Run()
+	link := filepath.Join(webBinDir, "sb-web")
+	if target, readErr := os.Readlink(link); readErr == nil && strings.Contains(target, webLibDir) {
+		_ = os.Remove(link)
+	}
+	if removeErr := os.RemoveAll(webLibDir); removeErr != nil {
+		return fmt.Errorf("删除程序目录失败：%w", removeErr)
+	}
+	if *purge {
+		purgePaths := []string{*configPath}
+		if filepath.Clean(*configPath) == defaultConfigPath {
+			purgePaths = append(purgePaths, filepath.Dir(*configPath))
+		}
+		for _, path := range []string{cfg.DataDir, cfg.LogDir} {
+			cleanPath := filepath.Clean(path)
+			if filepath.Base(cleanPath) != "sb-manager-web" {
+				return fmt.Errorf("拒绝删除非 Web 专属数据目录：%s；请手动确认后再删除", path)
+			}
+			purgePaths = append(purgePaths, cleanPath)
+		}
+		for _, path := range purgePaths {
+			if removeErr := os.RemoveAll(path); removeErr != nil {
+				return fmt.Errorf("删除数据目录 %s 失败：%w", path, removeErr)
+			}
+		}
+		fmt.Println("Web 面板、配置、数据库、证书、ACME 数据和日志已删除。")
+	} else {
+		fmt.Printf("Web 面板程序已卸载；配置、数据库、证书和日志保留在 %s、%s、%s。\n", *configPath, cfg.DataDir, cfg.LogDir)
+	}
+	webUninstalled = true
+	return nil
 }
 
 func runExternal(command string, args ...string) error {
@@ -383,6 +621,8 @@ func usage() {
 	fmt.Print(`sb-manager-web：Go WebUI 控制层
 
 用法：
+  sb-web                              打开交互管理面板
+  sb-web menu                         打开交互管理面板
   sb-web server [--config PATH] [--listen HOST:PORT]
   sb-web enable                         启用并启动 WebUI 服务
   sb-web disable|restart|logs           服务管理
@@ -391,6 +631,7 @@ func usage() {
   sb-web status [--listen HOST:PORT]
   sb-web init [--config PATH]           初始化配置和管理员账号
   sb-web reset-admin-password [USERNAME] [PASSWORD]
+  sb-web uninstall [--purge] [--yes]   卸载 Web（默认保留数据）
   sb-web version
 `)
 }

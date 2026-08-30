@@ -21,6 +21,11 @@ not vendor sb-manager source, service definitions, or installation logic. A
 deployment can pin that upstream installer independently or provision `sb`
 before running the Web installer.
 
+`sb-web` is the Web control-plane command: with no arguments it opens the
+interactive service/TLS/password/uninstall menu, while `sb-web server` is the
+long-running process used by systemd/OpenRC. Web uninstall removes only Web
+artifacts by default and never invokes the separate sb-manager uninstall path.
+
 On first initialization the controller creates a random owner username (with
 the `admin` role) and a random password; neither the username nor password is
 hard-coded to `admin`. The credentials are printed once by `sb-web init` or

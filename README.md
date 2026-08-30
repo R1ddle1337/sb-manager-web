@@ -92,6 +92,15 @@ sudo bash install.sh --panel-tls existing --panel-cert /path/fullchain.pem --pan
 
 安装器默认会启动面板；如果使用了 `--no-start`，再运行 `sb-web enable`。面板日常操作统一使用 `sb-web enable|restart|logs`；独立的 `sb` 命令只用于底层 sing-box 节点和证书管理，不是面板启动命令。
 
+SSH 中直接运行 `sudo sb-web` 会打开面板管理菜单，可查看状态、启停服务、查看日志、重置管理员密码、查看 TLS 配置和卸载。卸载命令如下：
+
+```bash
+sudo sb-web uninstall              # 卸载程序，保留配置、数据库、证书和日志
+sudo sb-web uninstall --purge --yes # 删除 Web 程序及全部 Web 数据
+```
+
+卸载 Web 不会卸载独立的 `sb-manager`，也不会删除 sing-box 节点配置。
+
 ## Agent 加入
 
 控制端登录后创建一次性 enrollment token，然后在新服务器执行：
