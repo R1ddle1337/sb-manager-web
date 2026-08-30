@@ -244,6 +244,26 @@ panel_validate_identifier() {
   }
 }
 
+panel_current_port() {
+  local listen_value port
+  listen_value="$PANEL_LISTEN"
+  if command -v jq >/dev/null 2>&1 && [[ -s "$ETC_DIR/config.json" ]]; then
+    listen_value=$(jq -r '.listen // empty' "$ETC_DIR/config.json" 2>/dev/null || true)
+    [[ -n "$listen_value" ]] || listen_value="$PANEL_LISTEN"
+  fi
+  port=${listen_value##*:}
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then port=9091; fi
+  printf '%s\n' "$port"
+}
+
+panel_enable_public_listen_for_ip() {
+  panel_is_ipv4 "$PANEL_TLS_DOMAIN" || return 0
+  ((panel_listen_override == 0)) || return 0
+  PANEL_LISTEN="0.0.0.0:$(panel_current_port)"
+  panel_listen_override=1
+  printf '已为公网 IP 证书自动设置面板监听：%s\n' "$PANEL_LISTEN"
+}
+
 panel_collect_tls_inputs() {
   local detected_ip
   case "$PANEL_TLS_MODE" in
@@ -309,6 +329,7 @@ panel_collect_tls_inputs() {
           esac
         fi
       fi
+      [[ "$PANEL_TLS_MODE" != acme-dns-cloudflare ]] && panel_enable_public_listen_for_ip
       if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]] && panel_is_ip "$PANEL_TLS_DOMAIN"; then
         echo 'Cloudflare DNS-01 不能为 IP 标识申请证书；IP 证书请使用 acme-http 流程。' >&2
         return 1
@@ -422,8 +443,35 @@ panel_self_signed_certificate() {
   rm -rf "$tmpdir"
 }
 
+panel_write_reload_hook() {
+  PANEL_CERT_RELOAD_HOOK="$LIB_DIR/reload-panel-certificate"
+  install -m 0755 /dev/stdin "$PANEL_CERT_RELOAD_HOOK" <<EOF_PANEL_RELOAD
+#!/bin/sh
+set -eu
+cert_new='$PANEL_TLS_CERT_PATH.new'
+key_new='$PANEL_TLS_KEY_PATH.new'
+cert='$PANEL_TLS_CERT_PATH'
+key='$PANEL_TLS_KEY_PATH'
+if [ -s "\$cert_new" ] && [ -s "\$key_new" ]; then
+  cert_pub=\$(openssl x509 -in "\$cert_new" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print \$1}')
+  key_pub=\$(openssl pkey -in "\$key_new" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print \$1}')
+  [ -n "\$cert_pub" ] && [ "\$cert_pub" = "\$key_pub" ]
+  chmod 0644 "\$cert_new"
+  chmod 0640 "\$key_new"
+  chown root:$SERVICE_USER "\$cert_new" "\$key_new" 2>/dev/null || true
+  mv -f "\$cert_new" "\$cert"
+  mv -f "\$key_new" "\$key"
+fi
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl try-restart sb-manager-web.service >/dev/null 2>&1 || true
+elif command -v rc-service >/dev/null 2>&1; then
+  rc-service sb-manager-web restart >/dev/null 2>&1 || true
+fi
+EOF_PANEL_RELOAD
+}
+
 panel_acme_certificate() {
-  local issue_args=() cert_new key_new
+  local issue_args=() cert_new key_new reload_cmd
   panel_install_acme || return 1
   issue_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --issue -d "$PANEL_TLS_DOMAIN" --server letsencrypt --keylength ec-256 --accountemail "$PANEL_TLS_EMAIL")
   if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]]; then
@@ -438,14 +486,15 @@ panel_acme_certificate() {
   fi
   "$panel_acme_bin" "${issue_args[@]}"
   mkdir -p "$PANEL_TLS_DIR"
+  panel_configure_tls
+  panel_write_reload_hook
   cert_new="$PANEL_TLS_CERT_PATH.new"
   key_new="$PANEL_TLS_KEY_PATH.new"
+  reload_cmd=$(printf '%q' "$PANEL_CERT_RELOAD_HOOK")
   "$panel_acme_bin" --home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" \
     --install-cert -d "$PANEL_TLS_DOMAIN" --ecc --fullchain-file "$cert_new" --key-file "$key_new" \
-    --reloadcmd "$BIN_DIR/sb-web restart"
-  panel_validate_certificate_pair "$cert_new" "$key_new" || return 1
-  mv -f "$cert_new" "$PANEL_TLS_CERT_PATH"
-  mv -f "$key_new" "$PANEL_TLS_KEY_PATH"
+    --reloadcmd "$reload_cmd"
+  panel_validate_certificate_pair "$PANEL_TLS_CERT_PATH" "$PANEL_TLS_KEY_PATH" || return 1
   touch "$PANEL_ACME_HOME/panel-certificate"
   unset CF_Token CF_Zone_ID
   panel_acme_enabled=1
@@ -481,10 +530,11 @@ panel_tls_setup() {
     command -v jq >/dev/null 2>&1 || { echo '面板 TLS 流程需要 jq。' >&2; return 1; }
     command -v openssl >/dev/null 2>&1 || { echo '面板 TLS 流程需要 openssl。' >&2; return 1; }
   fi
+  panel_configure_listen
   case "$PANEL_TLS_MODE" in
     none|auto) return 0;;
     self-signed) panel_self_signed_certificate;;
-    acme-http|acme-dns-cloudflare) panel_acme_certificate;;
+    acme-http|acme-dns-cloudflare) panel_acme_certificate; return $?;;
     existing) panel_copy_certificate_pair "$PANEL_TLS_CERT_FILE" "$PANEL_TLS_KEY_FILE";;
   esac
   panel_configure_tls
@@ -545,7 +595,11 @@ print_install_summary() {
   fi
   [[ -n "$port" && "$port" != "$listen_value" ]] || port=9091
   if [[ -z "$host" || "$host" == 0.0.0.0 || "$host" == :: ]]; then
-    display_host=$(primary_address)
+    if [[ "$scheme" == https && -n "$PANEL_TLS_DOMAIN" ]]; then
+      display_host="$PANEL_TLS_DOMAIN"
+    else
+      display_host=$(primary_address)
+    fi
   else
     display_host="$host"
   fi
@@ -571,6 +625,9 @@ print_install_summary() {
     if [[ "$PANEL_TLS_MODE" == acme-http ]] && panel_is_ip "$PANEL_TLS_DOMAIN"; then
       printf '这是 IP short-lived 证书，续期依赖面板自动续期任务，请勿停用该任务。\n'
     fi
+  fi
+  if [[ "$host" == 0.0.0.0 || "$host" == :: ]]; then
+    printf '请确认云安全组和系统防火墙已放行 TCP %s。\n' "$port"
   fi
   printf '面板服务管理（仅面板）：sb-web enable | sb-web restart | sb-web logs\n'
   printf '底层 sing-box 管理属于独立项目，命令名为 sb；面板不需要用它启动。\n'
@@ -697,7 +754,6 @@ if [[ -z "$AGENT_CONTROLLER" ]]; then
     exit "$init_rc"
   fi
 fi
-panel_configure_listen
 panel_tls_setup
 [[ -f "$PANEL_ACME_HOME/panel-certificate" ]] && panel_acme_enabled=1
 chown -R "$SERVICE_USER:$SERVICE_USER" "$ETC_DIR" "$VAR_DIR" "$LOG_DIR" 2>/dev/null || true
@@ -866,11 +922,12 @@ if [[ "$NO_START" == 0 ]]; then
     systemd_units=(sb-manager-web-helper.service sb-manager-web.service)
     [[ "$panel_acme_enabled" == 1 ]] && systemd_units+=(sb-manager-web-cert-renew.timer)
     systemctl enable --now "${systemd_units[@]}"
+    systemctl restart sb-manager-web-helper.service sb-manager-web.service
   elif [[ "$init_system" == openrc ]] && command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then
     rc-update add sb-manager-web-helper default || true
     rc-update add sb-manager-web default || true
-    rc-service sb-manager-web-helper start
-    rc-service sb-manager-web start
+    rc-service sb-manager-web-helper restart || rc-service sb-manager-web-helper start
+    rc-service sb-manager-web restart || rc-service sb-manager-web start
   else
     echo '未发现正在运行的 systemd/OpenRC；请手动运行 sb-web server。' >&2
   fi

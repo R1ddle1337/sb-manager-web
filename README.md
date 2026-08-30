@@ -64,7 +64,7 @@ curl -fsSL https://github.com/R1ddle1337/sb-manager-web/raw/main/install.sh | su
 
 如果服务器尚未安装 `sb-manager`，Web 安装器会下载并调用 [`sb-manager`](https://github.com/R1ddle1337/sb-manager) 独立仓库的官方安装器；不会把它的源码、服务定义或业务逻辑复制到 Web 项目。可以用 `SBM_INSTALL_REF`/`SBM_INSTALL_SHA256` 固定上游版本，用 `SBM_WEB_SB_INSTALL_URL` 指定内部镜像，或用 `SBM_WEB_AUTO_INSTALL_SB=0` 要求预先供应依赖。
 
-安装器会校验 Web 发布包 SHA256，并且只为当前实际运行的 systemd 或 OpenRC 生成服务。当前预览版本为 `0.1.0-alpha.19`，开发时可以使用：
+安装器会校验 Web 发布包 SHA256，并且只为当前实际运行的 systemd 或 OpenRC 生成服务。当前预览版本为 `0.1.0-alpha.20`，开发时可以使用：
 
 ```bash
 SBM_WEB_BINARY_URL=/path/to/sb-web SBM_WEB_SKIP_VERIFY=1 sudo -E bash install.sh --no-start
@@ -72,7 +72,7 @@ SBM_WEB_BINARY_URL=/path/to/sb-web SBM_WEB_SKIP_VERIFY=1 sudo -E bash install.sh
 
 首次在 SSH 中安装时，安装器会显示管理员账号、密码和面板访问地址；重复安装只显示已有账号，并提示使用 `sb-web reset-admin-password` 生成新密码。默认面板只监听 `127.0.0.1:9091`，输出中会同时给出 SSH 隧道命令；如需直接监听公网地址，可显式设置 `--panel-listen 0.0.0.0:9091`，并自行放行防火墙端口。
 
-安装器也提供面板 HTTPS 证书流程。交互式 SSH 安装会显示简化选择菜单；选择自动申请后可再选择“使用本机公网 IPv4”（自动探测）或“输入域名”。非交互安装可以直接指定模式：
+安装器也提供面板 HTTPS 证书流程。交互式 SSH 安装会显示简化选择菜单；选择自动申请后可再选择“使用本机公网 IPv4”（自动探测）或“输入域名”。选择公网 IP 证书且未手动指定监听地址时，安装器会自动监听 `0.0.0.0:9091`，重启服务并显示 `https://公网IP:9091`；仍需在云安全组和系统防火墙中放行该 TCP 端口。非交互安装可以直接指定模式：
 
 ```bash
 # IP 或内网使用自签名证书

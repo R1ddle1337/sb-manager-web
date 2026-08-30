@@ -143,15 +143,17 @@ set -Eeuo pipefail
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
   if [[ "${args[$i]}" == --install-cert ]]; then
-    cert=''; key=''
+    cert=''; key=''; reload=''
     for ((j=i+1; j<${#args[@]}; j++)); do
       case "${args[$j]}" in
         --fullchain-file) cert=${args[$((j+1))]} ;;
         --key-file) key=${args[$((j+1))]} ;;
+        --reloadcmd) reload=${args[$((j+1))]} ;;
       esac
     done
     cp "$SBM_TEST_CERT_SOURCE" "$cert"
     cp "$SBM_TEST_KEY_SOURCE" "$key"
+    [[ -z "$reload" ]] || bash -c "$reload"
     exit 0
   fi
 done
@@ -167,7 +169,6 @@ SBM_WEB_TLS_MODE=acme-auto \
 SBM_WEB_TLS_DOMAIN=IP \
 SBM_WEB_TLS_EMAIL=admin@example.com \
 SBM_WEB_PUBLIC_IPV4=127.0.0.1 \
-SBM_WEB_LISTEN=0.0.0.0:9091 \
 SBM_WEB_ACME_HOME="$ROOT/acme-home" \
 SBM_TEST_CERT_SOURCE="$ROOT/etc/sb-manager-web/tls/fullchain.pem" \
 SBM_TEST_KEY_SOURCE="$ROOT/etc/sb-manager-web/tls/key.pem" \
@@ -180,11 +181,14 @@ SBM_WEB_OPENRC_DIR="$ROOT/etc/init.d" \
 SBM_WEB_PERIODIC_DIR="$ROOT/etc/periodic" \
 SBM_WEB_INIT_SYSTEM=systemd \
 SBM_WEB_SERVICE_USER=daemon \
-bash "$PROJECT/install.sh" --no-start >/dev/null
+bash "$PROJECT/install.sh" --no-start >"$ROOT/acme-install.out"
 test -f "$ROOT/acme-home/panel-certificate"
 test -f "$ROOT/etc/systemd/system/sb-manager-web-cert-renew.service"
 test -f "$ROOT/etc/systemd/system/sb-manager-web-cert-renew.timer"
 jq -e '.listen == "0.0.0.0:9091"' "$ROOT/etc/sb-manager-web/config.json" >/dev/null
+test -x "$ROOT/usr/local/lib/sb-manager-web/reload-panel-certificate"
+grep -Fq '面板访问地址：https://127.0.0.1:9091' "$ROOT/acme-install.out"
+grep -Fq '请确认云安全组和系统防火墙已放行 TCP 9091' "$ROOT/acme-install.out"
 
 PATH="$ROOT/bin:/usr/bin:/bin" \
 SBM_WEB_VERSION=0.1.0 \
