@@ -472,6 +472,19 @@ panel_install_acme() {
   chmod 0700 "$PANEL_ACME_HOME"
 }
 
+panel_register_acme_account() {
+  local account_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --server letsencrypt --accountemail "$PANEL_TLS_EMAIL")
+  printf '正在验证 ACME 账户邮箱并注册账户…\n'
+  "$panel_acme_bin" "${account_args[@]}" --register-account || {
+    echo "ACME 账户注册失败；面板配置未修改。请确认邮箱 $PANEL_TLS_EMAIL 可用后重试。" >&2
+    return 1
+  }
+  "$panel_acme_bin" "${account_args[@]}" --update-account || {
+    echo "ACME 账户联系邮箱更新失败；面板配置未修改。" >&2
+    return 1
+  }
+}
+
 panel_validate_certificate_pair() {
   local cert=$1 key=$2 cert_pub key_pub
   [[ -s "$cert" && -s "$key" ]] || { echo '面板证书或私钥文件为空。' >&2; return 1; }
@@ -525,17 +538,18 @@ if [ -s "\$cert_new" ] && [ -s "\$key_new" ]; then
   mv -f "\$cert_new" "\$cert"
   mv -f "\$key_new" "\$key"
 fi
-if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+if [ ! -f '$PANEL_ACME_HOME/panel-deploying' ] && [ -f '$PANEL_ACME_HOME/panel-certificate' ] && [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
   systemctl try-restart sb-manager-web.service >/dev/null 2>&1 || true
-elif command -v rc-service >/dev/null 2>&1; then
+elif [ ! -f '$PANEL_ACME_HOME/panel-deploying' ] && [ -f '$PANEL_ACME_HOME/panel-certificate' ] && command -v rc-service >/dev/null 2>&1; then
   rc-service sb-manager-web restart >/dev/null 2>&1 || true
 fi
 EOF_PANEL_RELOAD
 }
 
 panel_acme_certificate() {
-  local issue_args=() cert_new key_new reload_cmd issue_rc=0
+  local issue_args=() cert_new key_new reload_cmd issue_rc=0 install_rc=0
   panel_install_acme || return 1
+  panel_register_acme_account || return 1
   issue_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --issue -d "$PANEL_TLS_DOMAIN" --server letsencrypt --keylength ec-256 --accountemail "$PANEL_TLS_EMAIL")
   if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]]; then
     export CF_Token="$PANEL_TLS_CF_TOKEN"
@@ -555,40 +569,44 @@ panel_acme_certificate() {
     printf '现有证书尚未到续期时间，继续部署当前有效证书。\n'
   fi
   mkdir -p "$PANEL_TLS_DIR"
-  panel_configure_tls
   panel_write_reload_hook
   cert_new="$PANEL_TLS_CERT_PATH.new"
   key_new="$PANEL_TLS_KEY_PATH.new"
   reload_cmd=$(printf '%q' "$PANEL_CERT_RELOAD_HOOK")
-  "$panel_acme_bin" --home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" \
+  touch "$PANEL_ACME_HOME/panel-deploying"
+  if "$panel_acme_bin" --home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" \
     --install-cert -d "$PANEL_TLS_DOMAIN" --ecc --fullchain-file "$cert_new" --key-file "$key_new" \
-    --reloadcmd "$reload_cmd"
-  panel_validate_certificate_pair "$PANEL_TLS_CERT_PATH" "$PANEL_TLS_KEY_PATH" || return 1
+    --reloadcmd "$reload_cmd"; then
+    :
+  else
+    install_rc=$?
+    rm -f "$PANEL_ACME_HOME/panel-deploying"
+    return "$install_rc"
+  fi
+  panel_validate_certificate_pair "$PANEL_TLS_CERT_PATH" "$PANEL_TLS_KEY_PATH" || {
+    rm -f "$PANEL_ACME_HOME/panel-deploying"
+    return 1
+  }
+  panel_activate_tls_config || {
+    rm -f "$PANEL_ACME_HOME/panel-deploying"
+    return 1
+  }
   touch "$PANEL_ACME_HOME/panel-certificate"
+  rm -f "$PANEL_ACME_HOME/panel-deploying"
   unset CF_Token CF_Zone_ID
   panel_acme_enabled=1
 }
 
-panel_configure_tls() {
+panel_activate_tls_config() {
   local tmpcfg
   command -v jq >/dev/null 2>&1 || { echo '配置面板 TLS 需要 jq。' >&2; return 1; }
   tmpcfg=$(mktemp "$ETC_DIR/.config.XXXXXX")
-  jq --arg cert "$PANEL_TLS_CERT_PATH" --arg key "$PANEL_TLS_KEY_PATH" \
-    '.tls.enabled=true | .tls.cert_file=$cert | .tls.key_file=$key' \
+  jq --arg cert "$PANEL_TLS_CERT_PATH" --arg key "$PANEL_TLS_KEY_PATH" --arg listen "$PANEL_LISTEN" --argjson update_listen "$panel_listen_override" \
+    '.tls.enabled=true | .tls.cert_file=$cert | .tls.key_file=$key | if $update_listen == 1 then .listen=$listen else . end' \
     "$ETC_DIR/config.json" >"$tmpcfg"
   chmod 0600 "$tmpcfg"
   mv -f "$tmpcfg" "$ETC_DIR/config.json"
   panel_tls_enabled=1
-}
-
-panel_configure_listen() {
-  local tmpcfg
-  ((panel_listen_override == 1)) || return 0
-  command -v jq >/dev/null 2>&1 || { echo '覆盖面板监听地址需要 jq。' >&2; return 1; }
-  tmpcfg=$(mktemp "$ETC_DIR/.config.XXXXXX")
-  jq --arg listen "$PANEL_LISTEN" '.listen=$listen' "$ETC_DIR/config.json" >"$tmpcfg"
-  chmod 0600 "$tmpcfg"
-  mv -f "$tmpcfg" "$ETC_DIR/config.json"
 }
 
 panel_tls_setup() {
@@ -599,14 +617,13 @@ panel_tls_setup() {
     command -v jq >/dev/null 2>&1 || { echo '面板 TLS 流程需要 jq。' >&2; return 1; }
     command -v openssl >/dev/null 2>&1 || { echo '面板 TLS 流程需要 openssl。' >&2; return 1; }
   fi
-  panel_configure_listen
   case "$PANEL_TLS_MODE" in
     none|auto) return 0;;
     self-signed) panel_self_signed_certificate;;
     acme-http|acme-dns-cloudflare) panel_acme_certificate; return $?;;
     existing) panel_copy_certificate_pair "$PANEL_TLS_CERT_FILE" "$PANEL_TLS_KEY_FILE";;
   esac
-  panel_configure_tls
+  panel_activate_tls_config
 }
 
 panel_validate_listen() {

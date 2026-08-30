@@ -164,6 +164,9 @@ cat >"$ROOT/acme.sh" <<'EOF_ACME'
 set -Eeuo pipefail
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == --register-account && ${SBM_TEST_ACME_FAIL_REGISTER:-0} == 1 ]]; then
+    exit 31
+  fi
   if [[ "${args[$i]}" == --accountemail && -n ${SBM_TEST_ACME_EMAIL_CAPTURE:-} ]]; then
     printf '%s\n' "${args[$((i+1))]}" >"$SBM_TEST_ACME_EMAIL_CAPTURE"
   fi
@@ -186,6 +189,33 @@ EOF_ACME
 chmod +x "$ROOT/acme.sh"
 mkdir -p "$ROOT/acme-home"
 cp -p "$ROOT/acme.sh" "$ROOT/acme-home/acme.sh"
+config_before_acme_failure=$(sha256sum "$ROOT/etc/sb-manager-web/config.json" | awk '{print $1}')
+set +e
+PATH="$ROOT/bin:/usr/bin:/bin" \
+SBM_WEB_VERSION=0.1.0 \
+SBM_WEB_BINARY_URL="$ROOT/sb-web" \
+SBM_WEB_SKIP_VERIFY=1 \
+SBM_WEB_TLS_MODE=acme-auto \
+SBM_WEB_TLS_DOMAIN=IP \
+SBM_WEB_TLS_EMAIL=admin@example.com \
+SBM_WEB_PUBLIC_IPV4=127.0.0.1 \
+SBM_WEB_ACME_HOME="$ROOT/acme-home" \
+SBM_TEST_ACME_FAIL_REGISTER=1 \
+SBM_WEB_PREFIX="$ROOT/usr/local" \
+SBM_WEB_ETC="$ROOT/etc/sb-manager-web" \
+SBM_WEB_VAR="$ROOT/var/lib/sb-manager-web" \
+SBM_WEB_LOG="$ROOT/var/log/sb-manager-web" \
+SBM_WEB_SYSTEMD_DIR="$ROOT/etc/systemd/system" \
+SBM_WEB_OPENRC_DIR="$ROOT/etc/init.d" \
+SBM_WEB_INIT_SYSTEM=systemd \
+SBM_WEB_SERVICE_USER=daemon \
+bash "$PROJECT/install.sh" --no-start >"$ROOT/acme-register-failure.out" 2>&1
+acme_register_rc=$?
+set -e
+[[ "$acme_register_rc" != 0 ]]
+[[ $(sha256sum "$ROOT/etc/sb-manager-web/config.json" | awk '{print $1}') == "$config_before_acme_failure" ]]
+grep -Fq 'ACME 账户注册失败；面板配置未修改' "$ROOT/acme-register-failure.out"
+
 PATH="$ROOT/bin:/usr/bin:/bin" \
 SBM_WEB_VERSION=0.1.0 \
 SBM_WEB_BINARY_URL="$ROOT/sb-web" \

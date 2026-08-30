@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Make automatic ACME setup transactional so registration/issuance failures do not modify the active panel configuration.
 - Normalize ACME contact emails from interactive terminals before account registration.
 - Require HTTPS for controller installs and make automatic public-IPv4 ACME the default certificate choice.
 - Add an interactive `sb-web` management menu and safe Web-only uninstall, while keeping sb-manager data and the separate `sb` command untouched.
