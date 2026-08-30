@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Require HTTPS for controller installs and make automatic public-IPv4 ACME the default certificate choice.
 - Add an interactive `sb-web` management menu and safe Web-only uninstall, while keeping sb-manager data and the separate `sb` command untouched.
 - Add panel TLS setup flows (self-signed IP SAN, ACME HTTP-01/DNS-01 and existing certificates), renewal scheduling, SSH install summary, and repeatable administrator account guidance.
 - Let the Web installer bootstrap a missing sb-manager from its independent upstream installer, and avoid writing OpenRC scripts into Debian's SysV compatibility directory.

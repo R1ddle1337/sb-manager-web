@@ -54,7 +54,7 @@ The Web service runs as the unprivileged `sbweb` user. A separate root helper ow
 - service sandboxing;
 - bounded command output and timeouts.
 
-The installer can configure the panel's own HTTPS listener independently of
+The controller installer requires HTTPS and configures the panel's own TLS listener independently of
 node certificates: a self-signed certificate (including IP SANs), ACME
 HTTP-01 for a domain or supported IP identifier, ACME DNS-01 through
 Cloudflare, or an existing certificate/key pair. Panel keys are stored under
@@ -133,7 +133,8 @@ failover snapshot.
 
 ## Network defaults
 
-- Web listener: `127.0.0.1:9091`
+- Development listener: `127.0.0.1:9091`
+- Installed controller: HTTPS; public-IP certificate mode listens on `0.0.0.0:9091`
 - Remote Agent: outbound HTTPS to the configured controller URL
 - No installer firewall changes
 - No inbound Agent port

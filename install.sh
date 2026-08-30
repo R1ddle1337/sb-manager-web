@@ -52,7 +52,7 @@ usage() {
   SBM_WEB_SB_INSTALL_URL   sb-manager 独立安装器地址
   SBM_WEB_AUTO_INSTALL_SB=0  禁用缺失依赖时的自动安装
   SBM_WEB_INIT_SYSTEM      强制 systemd/openrc（默认自动检测）
-  SBM_WEB_TLS_MODE         auto/none/self-signed/acme-http/acme-dns-cloudflare/existing
+  SBM_WEB_TLS_MODE         auto/self-signed/acme-http/acme-dns-cloudflare/existing
   SBM_WEB_TLS_DOMAIN       面板证书的域名或 IP
   SBM_WEB_TLS_EMAIL        ACME 账户邮箱
   SBM_WEB_TLS_CERT_FILE/KEY_FILE  已有证书和私钥绝对路径（existing）
@@ -158,24 +158,40 @@ panel_choose_tls_mode() {
   [[ "$PANEL_TLS_MODE" == auto ]] || return 0
   [[ -n "$AGENT_CONTROLLER" ]] && { PANEL_TLS_MODE=none; return 0; }
   if ! panel_has_tty; then
-    PANEL_TLS_MODE=none
-    return 0
+    if command -v jq >/dev/null 2>&1 && [[ -s "$ETC_DIR/config.json" ]] \
+      && [[ $(jq -r '.tls.enabled // false' "$ETC_DIR/config.json" 2>/dev/null) == true ]]; then
+      PANEL_TLS_CERT_FILE=$(jq -r '.tls.cert_file // empty' "$ETC_DIR/config.json")
+      PANEL_TLS_KEY_FILE=$(jq -r '.tls.key_file // empty' "$ETC_DIR/config.json")
+      if [[ -s "$PANEL_TLS_CERT_FILE" && -s "$PANEL_TLS_KEY_FILE" ]]; then
+        PANEL_TLS_MODE=existing
+        return 0
+      fi
+    fi
+    echo '控制端面板强制使用 HTTPS；非交互首次安装请指定 --panel-tls 和相应证书参数。' >&2
+    return 1
   fi
   {
-    printf '\n面板 HTTPS 证书设置（可稍后通过反向代理配置）：\n'
-    printf '  1) 暂不启用 HTTPS（默认）\n'
-    printf '  2) 自动申请证书（输入域名/IP，再选择 HTTP-01 或 Cloudflare DNS-01）\n'
-    printf '  3) 生成自签名证书（适合 IP/内网，浏览器会提示不受信任）\n'
+    printf '\n面板强制使用 HTTPS，请选择证书方式：\n'
+    printf '  1) 自动申请本机公网 IPv4 证书（默认）\n'
+    printf '  2) 申请域名证书\n'
+    printf '  3) 生成自签名证书（适合内网，浏览器会提示不受信任）\n'
     printf '  4) 使用已有证书和私钥（输入绝对路径）\n'
     printf '请选择 [1-4]：'
   } >/dev/tty
   local choice
   choice=$(panel_read_tty '' 0)
   case "$choice" in
-    2) PANEL_TLS_MODE=acme-auto;;
+    2) PANEL_TLS_MODE=acme-domain;;
     3) PANEL_TLS_MODE=self-signed;;
     4) PANEL_TLS_MODE=existing;;
-    *) PANEL_TLS_MODE=none;;
+    *)
+      PANEL_TLS_MODE=acme-http
+      PANEL_TLS_DOMAIN=$(panel_public_ipv4 || true)
+      [[ -n "$PANEL_TLS_DOMAIN" ]] || {
+        echo '无法自动探测公网 IPv4；请重新运行并选择域名证书，或设置 SBM_WEB_PUBLIC_IPV4。' >&2
+        return 1
+      }
+      ;;
   esac
 }
 
@@ -218,6 +234,17 @@ panel_public_ipv4() {
     done
   fi
   return 1
+}
+
+panel_saved_acme_email() {
+  local account_conf="$PANEL_ACME_HOME/config/account.conf"
+  [[ -s "$account_conf" ]] || return 1
+  (
+    # acme.sh owns this root-only file and writes shell assignments.
+    # shellcheck disable=SC1090
+    source "$account_conf"
+    printf '%s\n' "${ACCOUNT_EMAIL:-}"
+  )
 }
 
 panel_default_identifier() {
@@ -267,11 +294,19 @@ panel_enable_public_listen_for_ip() {
 panel_collect_tls_inputs() {
   local detected_ip
   case "$PANEL_TLS_MODE" in
-    none|auto) return 0;;
+    none)
+      [[ -n "$AGENT_CONTROLLER" ]] && return 0
+      echo '控制端面板不允许关闭 HTTPS。' >&2
+      return 1
+      ;;
+    auto)
+      echo '无法确定 HTTPS 证书配置。' >&2
+      return 1
+      ;;
     self-signed)
       [[ -n "$PANEL_TLS_DOMAIN" ]] || PANEL_TLS_DOMAIN=$(panel_default_identifier)
       ;;
-    acme-auto|acme-http|acme-dns-cloudflare)
+    acme-auto|acme-domain|acme-http|acme-dns-cloudflare)
       if [[ -z "$PANEL_TLS_DOMAIN" ]]; then
         panel_has_tty || { echo 'ACME 流程需要 --panel-domain 或 SBM_WEB_TLS_DOMAIN。' >&2; return 1; }
         if [[ "$PANEL_TLS_MODE" == acme-auto ]]; then
@@ -317,6 +352,15 @@ panel_collect_tls_inputs() {
         return 1
       fi
       panel_validate_identifier "$PANEL_TLS_DOMAIN" || return 1
+      if [[ "$PANEL_TLS_MODE" == acme-domain ]]; then
+        panel_is_ip "$PANEL_TLS_DOMAIN" && { echo '域名证书选项不能输入 IP；公网 IP 证书请使用默认选项 1。' >&2; return 1; }
+        panel_has_tty || { echo '域名证书需要选择 HTTP-01 或 Cloudflare DNS-01。' >&2; return 1; }
+        printf '1) HTTP-01（需要公网 80 端口）\n2) Cloudflare DNS-01（支持泛域名）\n请选择 [1-2]：' >/dev/tty
+        case "$(panel_read_tty '' 0)" in
+          2) PANEL_TLS_MODE=acme-dns-cloudflare;;
+          *) PANEL_TLS_MODE=acme-http;;
+        esac
+      fi
       if [[ "$PANEL_TLS_MODE" == acme-auto ]]; then
         if panel_is_ip "$PANEL_TLS_DOMAIN"; then
           PANEL_TLS_MODE=acme-http
@@ -333,6 +377,9 @@ panel_collect_tls_inputs() {
       if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]] && panel_is_ip "$PANEL_TLS_DOMAIN"; then
         echo 'Cloudflare DNS-01 不能为 IP 标识申请证书；IP 证书请使用 acme-http 流程。' >&2
         return 1
+      fi
+      if [[ -z "$PANEL_TLS_EMAIL" ]]; then
+        PANEL_TLS_EMAIL=$(panel_saved_acme_email || true)
       fi
       if [[ -z "$PANEL_TLS_EMAIL" ]]; then
         panel_has_tty || { echo 'ACME 流程需要 --panel-email 或 SBM_WEB_TLS_EMAIL。' >&2; return 1; }
@@ -366,7 +413,7 @@ panel_collect_tls_inputs() {
       }
       ;;
     *)
-      echo "面板 TLS 模式无效：$PANEL_TLS_MODE（可用 none、self-signed、acme-http、acme-dns-cloudflare、existing）" >&2
+      echo "面板 TLS 模式无效：$PANEL_TLS_MODE（可用 auto、self-signed、acme-http、acme-dns-cloudflare、existing）" >&2
       return 1
       ;;
   esac
@@ -471,7 +518,7 @@ EOF_PANEL_RELOAD
 }
 
 panel_acme_certificate() {
-  local issue_args=() cert_new key_new reload_cmd
+  local issue_args=() cert_new key_new reload_cmd issue_rc=0
   panel_install_acme || return 1
   issue_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --issue -d "$PANEL_TLS_DOMAIN" --server letsencrypt --keylength ec-256 --accountemail "$PANEL_TLS_EMAIL")
   if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]]; then
@@ -484,7 +531,13 @@ panel_acme_certificate() {
   if panel_is_ip "$PANEL_TLS_DOMAIN"; then
     issue_args+=(--cert-profile shortlived)
   fi
-  "$panel_acme_bin" "${issue_args[@]}"
+  if "$panel_acme_bin" "${issue_args[@]}"; then
+    :
+  else
+    issue_rc=$?
+    [[ "$issue_rc" == 2 ]] || return "$issue_rc"
+    printf '现有证书尚未到续期时间，继续部署当前有效证书。\n'
+  fi
   mkdir -p "$PANEL_TLS_DIR"
   panel_configure_tls
   panel_write_reload_hook

@@ -29,6 +29,8 @@ PATH="$ROOT/bin:/usr/bin:/bin" \
 SBM_WEB_VERSION=0.1.0 \
 SBM_WEB_BINARY_URL="$ROOT/sb-web" \
 SBM_WEB_SKIP_VERIFY=1 \
+SBM_WEB_TLS_MODE=self-signed \
+SBM_WEB_TLS_DOMAIN=127.0.0.1 \
 SBM_WEB_SB_INSTALL_URL="$ROOT/fake-sb-installer" \
 SBM_TEST_SB_TARGET="$ROOT/bin/sb" \
 SBM_TEST_SB_MARKER="$ROOT/sb-manager-installed" \
@@ -55,6 +57,26 @@ jq -e --arg dir "$ROOT/var/lib/sb-manager-web" '.data_dir==$dir and .database==(
 [[ $(stat -c '%U' "$ROOT/var/lib/sb-manager-web") == daemon ]]
 grep -Fq 'User=daemon' "$ROOT/etc/systemd/system/sb-manager-web.service"
 "$ROOT/usr/local/bin/sb-web" version | grep -Fq 'sb-manager-web'
+
+set +e
+PATH="$ROOT/bin:/usr/bin:/bin" \
+SBM_WEB_VERSION=0.1.0 \
+SBM_WEB_BINARY_URL="$ROOT/sb-web" \
+SBM_WEB_SKIP_VERIFY=1 \
+SBM_WEB_TLS_MODE=none \
+SBM_WEB_PREFIX="$ROOT/usr/local" \
+SBM_WEB_ETC="$ROOT/etc/sb-manager-web" \
+SBM_WEB_VAR="$ROOT/var/lib/sb-manager-web" \
+SBM_WEB_LOG="$ROOT/var/log/sb-manager-web" \
+SBM_WEB_SYSTEMD_DIR="$ROOT/etc/systemd/system" \
+SBM_WEB_OPENRC_DIR="$ROOT/etc/init.d" \
+SBM_WEB_INIT_SYSTEM=systemd \
+SBM_WEB_SERVICE_USER=daemon \
+bash "$PROJECT/install.sh" --no-start >"$ROOT/tls-none.out" 2>&1
+tls_none_rc=$?
+set -e
+[[ "$tls_none_rc" != 0 ]]
+grep -Fq '控制端面板不允许关闭 HTTPS' "$ROOT/tls-none.out"
 
 repeat_output=$(PATH="$ROOT/bin:/usr/bin:/bin" \
   SBM_WEB_VERSION=0.1.0 \
