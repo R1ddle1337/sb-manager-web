@@ -254,12 +254,33 @@ panel_collect_tls_inputs() {
     acme-auto|acme-http|acme-dns-cloudflare)
       if [[ -z "$PANEL_TLS_DOMAIN" ]]; then
         panel_has_tty || { echo 'ACME 流程需要 --panel-domain 或 SBM_WEB_TLS_DOMAIN。' >&2; return 1; }
-        detected_ip=$(panel_public_ipv4 || true)
-        if [[ -n "$detected_ip" ]]; then
-          PANEL_TLS_DOMAIN=$(panel_read_tty "面板域名或 IP（直接回车使用 $detected_ip）：")
-          [[ -n "$PANEL_TLS_DOMAIN" ]] || PANEL_TLS_DOMAIN="$detected_ip"
+        if [[ "$PANEL_TLS_MODE" == acme-auto ]]; then
+          detected_ip=$(panel_public_ipv4 || true)
+          printf '\n自动申请证书：\n' >/dev/tty
+          if [[ -n "$detected_ip" ]]; then
+            printf '  1) 使用本机公网 IPv4（检测到：%s）\n' "$detected_ip" >/dev/tty
+          else
+            printf '  1) 使用本机公网 IPv4（当前未检测到，可稍后手动指定）\n' >/dev/tty
+          fi
+          printf '  2) 输入域名\n请选择 [1-2]：' >/dev/tty
+          case "$(panel_read_tty '' 0)" in
+            1)
+              PANEL_TLS_DOMAIN="$detected_ip"
+              [[ -n "$PANEL_TLS_DOMAIN" ]] || {
+                echo '无法自动探测公网 IPv4，请选择域名或设置 SBM_WEB_PUBLIC_IPV4。' >&2
+                return 1
+              }
+              ;;
+            *) PANEL_TLS_DOMAIN=$(panel_read_tty '面板域名：');;
+          esac
         else
-          PANEL_TLS_DOMAIN=$(panel_read_tty '面板域名或 IP（输入 IP 将自动探测公网 IPv4）：')
+          detected_ip=$(panel_public_ipv4 || true)
+          if [[ -n "$detected_ip" ]]; then
+            PANEL_TLS_DOMAIN=$(panel_read_tty "面板域名或 IP（直接回车使用 $detected_ip）：")
+            [[ -n "$PANEL_TLS_DOMAIN" ]] || PANEL_TLS_DOMAIN="$detected_ip"
+          else
+            PANEL_TLS_DOMAIN=$(panel_read_tty '面板域名或 IP（输入 IP 将自动探测公网 IPv4）：')
+          fi
         fi
       fi
       case "${PANEL_TLS_DOMAIN,,}" in
