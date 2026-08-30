@@ -24,6 +24,7 @@ PANEL_TLS_KEY_FILE=${SBM_WEB_TLS_KEY_FILE:-}
 PANEL_TLS_CF_TOKEN=${SBM_WEB_TLS_CF_TOKEN:-}
 PANEL_TLS_CF_ZONE_ID=${SBM_WEB_TLS_CF_ZONE_ID:-}
 PANEL_LISTEN=${SBM_WEB_LISTEN:-127.0.0.1:9091}
+PANEL_PUBLIC_IPV4=${SBM_WEB_PUBLIC_IPV4:-}
 PANEL_ACME_HOME=${SBM_WEB_ACME_HOME:-$VAR_DIR/acme-panel}
 PANEL_ACME_COMMIT=${SBM_WEB_ACME_COMMIT:-3661fd86b6304115e42f43910e6dd452ab9866d6}
 PANEL_ACME_SHA256=${SBM_WEB_ACME_SHA256:-9af3ad3d775a5782246df4cdd4b4e7b9b3179deb63c509b10e3ba0433093a884}
@@ -56,6 +57,7 @@ usage() {
   SBM_WEB_TLS_EMAIL        ACME 账户邮箱
   SBM_WEB_TLS_CERT_FILE/KEY_FILE  已有证书和私钥绝对路径（existing）
   SBM_WEB_TLS_CF_TOKEN/ZONE_ID    Cloudflare DNS-01 凭据
+  SBM_WEB_PUBLIC_IPV4       覆盖自动探测到的公网 IPv4
   SBM_WEB_LISTEN           面板监听地址（默认 127.0.0.1:9091）
 
 命令行证书选项：
@@ -193,8 +195,35 @@ panel_is_ip() {
   panel_is_ipv4 "$1" || { [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:.]+$ ]]; }
 }
 
+panel_public_ipv4() {
+  local candidate url
+  if [[ -n "$PANEL_PUBLIC_IPV4" ]]; then
+    panel_is_ipv4 "$PANEL_PUBLIC_IPV4" || return 1
+    printf '%s\n' "$PANEL_PUBLIC_IPV4"
+    return 0
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    candidate=$(curl -4fsS --noproxy '*' --connect-timeout 1 --max-time 2 \
+      'http://169.254.169.254/latest/meta-data/public-ipv4' 2>/dev/null || true)
+    if panel_is_ipv4 "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    for url in https://api.ipify.org https://ifconfig.me/ip https://ipv4.icanhazip.com; do
+      candidate=$(curl -4fsS --connect-timeout 2 --max-time 3 --proto '=https' --tlsv1.2 "$url" 2>/dev/null | tr -d '[:space:]' || true)
+      if panel_is_ipv4 "$candidate"; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
 panel_default_identifier() {
   local address=''
+  address=$(panel_public_ipv4 || true)
+  [[ -n "$address" ]] && { printf '%s\n' "$address"; return 0; }
   if command -v ip >/dev/null 2>&1; then
     address=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')
   fi
@@ -216,6 +245,7 @@ panel_validate_identifier() {
 }
 
 panel_collect_tls_inputs() {
+  local detected_ip
   case "$PANEL_TLS_MODE" in
     none|auto) return 0;;
     self-signed)
@@ -224,7 +254,26 @@ panel_collect_tls_inputs() {
     acme-auto|acme-http|acme-dns-cloudflare)
       if [[ -z "$PANEL_TLS_DOMAIN" ]]; then
         panel_has_tty || { echo 'ACME 流程需要 --panel-domain 或 SBM_WEB_TLS_DOMAIN。' >&2; return 1; }
-        PANEL_TLS_DOMAIN=$(panel_read_tty '面板域名或 IP：')
+        detected_ip=$(panel_public_ipv4 || true)
+        if [[ -n "$detected_ip" ]]; then
+          PANEL_TLS_DOMAIN=$(panel_read_tty "面板域名或 IP（直接回车使用 $detected_ip）：")
+          [[ -n "$PANEL_TLS_DOMAIN" ]] || PANEL_TLS_DOMAIN="$detected_ip"
+        else
+          PANEL_TLS_DOMAIN=$(panel_read_tty '面板域名或 IP（输入 IP 将自动探测公网 IPv4）：')
+        fi
+      fi
+      case "${PANEL_TLS_DOMAIN,,}" in
+        ip|public-ip|公网ip|公网-ip)
+          PANEL_TLS_DOMAIN=$(panel_public_ipv4 || true)
+          [[ -n "$PANEL_TLS_DOMAIN" ]] || {
+            echo '无法自动探测公网 IPv4，请改用 --panel-domain 指定地址或设置 SBM_WEB_PUBLIC_IPV4。' >&2
+            return 1
+          }
+          ;;
+      esac
+      if [[ -z "$PANEL_TLS_DOMAIN" ]]; then
+        echo '面板域名或 IP 不能为空。' >&2
+        return 1
       fi
       panel_validate_identifier "$PANEL_TLS_DOMAIN" || return 1
       if [[ "$PANEL_TLS_MODE" == acme-auto ]]; then
@@ -443,6 +492,8 @@ panel_validate_listen() {
 
 primary_address() {
   local address=''
+  address=$(panel_public_ipv4 || true)
+  [[ -n "$address" ]] && { printf '%s\n' "$address"; return 0; }
   if command -v ip >/dev/null 2>&1; then
     address=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')
   fi
