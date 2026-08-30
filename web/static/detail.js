@@ -24,7 +24,7 @@
     const list = Array.isArray(nodes) ? nodes : (nodes.nodes || []);
     $('server-node-count').textContent = `${list.length} 个`;
     $('capabilities').textContent = JSON.stringify(caps, null, 2);
-    $('nodes-list').innerHTML = list.length ? `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th><th>编辑</th></tr></thead><tbody>${list.map((node) => `<tr><td><code>${escapeHTML(node.id)}</code></td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="ok">● 启用</span>' : '<span class="bad">● 停用</span>'}</td><td><a href="/servers/${server}/nodes/${encodeURIComponent(node.id)}">编辑 →</a></td></tr>`).join('')}</tbody></table>` : '暂无节点';
+    $('nodes-list').innerHTML = list.length ? `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th><th>编辑</th></tr></thead><tbody>${list.map((node) => `<tr><td><code>${escapeHTML(node.id)}</code></td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="ok">启用</span>' : '<span class="bad">停用</span>'}</td><td><a href="/servers/${server}/nodes/${encodeURIComponent(node.id)}">编辑</a></td></tr>`).join('')}</tbody></table>` : '暂无节点';
     $('nodes-json').href = `/api/v1/servers/${server}/nodes`;
   }
   if (!nodeID && serverID !== 'local') {

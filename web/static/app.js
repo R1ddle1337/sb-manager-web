@@ -64,7 +64,7 @@
   }
   function renderNodes(nodes) {
     if (!Array.isArray(nodes) || !nodes.length) { $('nodes-list').textContent = '暂无节点'; return; }
-    $('nodes-list').innerHTML = `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th><th>操作</th></tr></thead><tbody>${nodes.map((node) => `<tr><td><a href="/servers/local/nodes/${encodeURIComponent(node.id)}"><code>${escapeHTML(node.id)}</code></a></td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="ok">● 启用</span>' : '<span class="bad">● 停用</span>'}</td><td><button class="secondary node-action" data-node-id="${escapeHTML(node.id)}" data-node-action="${node.enabled ? 'disable' : 'enable'}">${node.enabled ? '停用' : '启用'}</button> <button class="secondary share-action" data-node-id="${escapeHTML(node.id)}" data-qr="0">分享</button> <button class="secondary share-action" data-node-id="${escapeHTML(node.id)}" data-qr="1">QR</button> <button class="secondary delete-action" data-node-id="${escapeHTML(node.id)}">删除</button></td></tr>`).join('')}</tbody></table>`;
+    $('nodes-list').innerHTML = `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th><th>操作</th></tr></thead><tbody>${nodes.map((node) => `<tr><td><a href="/servers/local/nodes/${encodeURIComponent(node.id)}"><code>${escapeHTML(node.id)}</code></a></td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="ok">启用</span>' : '<span class="bad">停用</span>'}</td><td><button class="secondary node-action" data-node-id="${escapeHTML(node.id)}" data-node-action="${node.enabled ? 'disable' : 'enable'}">${node.enabled ? '停用' : '启用'}</button> <button class="secondary share-action" data-node-id="${escapeHTML(node.id)}" data-qr="0">分享</button> <button class="secondary share-action" data-node-id="${escapeHTML(node.id)}" data-qr="1">QR</button> <button class="secondary delete-action" data-node-id="${escapeHTML(node.id)}">删除</button></td></tr>`).join('')}</tbody></table>`;
     document.querySelectorAll('.node-action').forEach((button) => button.addEventListener('click', () => nodeAction(button)));
     document.querySelectorAll('.share-action').forEach((button) => button.addEventListener('click', () => showShare(button.dataset.nodeId, button.dataset.qr === '1')));
     document.querySelectorAll('.delete-action').forEach((button) => button.addEventListener('click', () => { if (window.confirm(`确认删除节点 ${button.dataset.nodeId}？`)) nodeActionWith(button, 'delete'); }));
@@ -82,7 +82,7 @@
   function renderServers(servers) {
     const filtered = serverFilter ? servers.filter((server) => `${server.id} ${server.name} ${server.address} ${server.region}`.toLowerCase().includes(serverFilter.toLowerCase())) : servers;
     if (!filtered.length) { $('servers-list').textContent = serverFilter ? '没有匹配的服务器' : '暂无服务器'; return; }
-    $('servers-list').innerHTML = `<table><thead><tr><th>选择</th><th>名称</th><th>地址</th><th>区域</th><th>状态</th><th>核心</th><th>最近心跳</th></tr></thead><tbody>${filtered.map((server) => `<tr><td><input class="server-select" type="checkbox" value="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}></td><td><a href="/servers/${encodeURIComponent(server.id)}"><strong>${escapeHTML(server.name)}</strong></a></td><td>${escapeHTML(server.address || server.id)}</td><td>${escapeHTML(server.region)}</td><td>${server.online ? '<span class="ok">● 在线</span>' : '<span class="bad">● 离线</span>'}</td><td>${escapeHTML(server.core_version)}</td><td>${escapeHTML(server.last_seen)}</td></tr>`).join('')}</tbody></table>`;
+    $('servers-list').innerHTML = `<table><thead><tr><th>选择</th><th>名称</th><th>地址</th><th>区域</th><th>状态</th><th>核心</th><th>最近心跳</th></tr></thead><tbody>${filtered.map((server) => `<tr><td><input class="server-select" type="checkbox" value="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}></td><td><a href="/servers/${encodeURIComponent(server.id)}"><strong>${escapeHTML(server.name)}</strong></a></td><td>${escapeHTML(server.address || server.id)}</td><td>${escapeHTML(server.region)}</td><td>${server.online ? '<span class="ok">在线</span>' : '<span class="bad">离线</span>'}</td><td>${escapeHTML(server.core_version)}</td><td>${escapeHTML(server.last_seen)}</td></tr>`).join('')}</tbody></table>`;
   }
   async function action(name, button) {
     button.disabled = true;
@@ -173,13 +173,51 @@
       setTimeout(load, 900);
     } catch (error) { showError(error.message); } finally { button.disabled = false; }
   });
-  $('add-server').addEventListener('click', async () => {
+  const serverDialog = $('server-dialog');
+  const serverDialogStatus = $('server-dialog-status');
+  const joinCommand = $('join-command');
+  const copyJoinCommand = $('copy-join-command');
+  const openServerDialog = () => {
+    serverDialogStatus.textContent = '正在创建加入命令…';
+    serverDialogStatus.className = 'dialog-status';
+    joinCommand.hidden = true;
+    copyJoinCommand.hidden = true;
+    $('renew-enrollment').hidden = true;
+    if (!serverDialog.open) {
+      if (typeof serverDialog.showModal === 'function') serverDialog.showModal();
+      else serverDialog.setAttribute('open', '');
+    }
+  };
+  const createEnrollment = async () => {
+    openServerDialog();
     try {
       const enrollment = await json('/api/v1/enrollment', { method: 'POST', headers: { 'X-CSRF-Token': csrf() }, body: '{}' });
-      const output = $('join-command');
-      output.hidden = false;
-      output.textContent = `有效期至：${enrollment.expires_at}\n\n${enrollment.join_command}`;
-    } catch (error) { showError(error.message); }
+      joinCommand.hidden = false;
+      joinCommand.textContent = `有效期至：${enrollment.expires_at}\n\n${enrollment.join_command}`;
+      copyJoinCommand.hidden = false;
+      $('renew-enrollment').hidden = false;
+      serverDialogStatus.textContent = '加入命令已生成，请复制到目标服务器终端执行。';
+      serverDialogStatus.className = 'dialog-status success';
+    } catch (error) {
+      serverDialogStatus.textContent = `生成失败：${error.message}`;
+      serverDialogStatus.className = 'dialog-status error';
+      showError(error.message);
+    }
+  };
+  $('add-server').addEventListener('click', createEnrollment);
+  $('server-dialog-close').addEventListener('click', () => {
+    if (typeof serverDialog.close === 'function') serverDialog.close();
+    else serverDialog.removeAttribute('open');
+  });
+  $('renew-enrollment').addEventListener('click', createEnrollment);
+  copyJoinCommand.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(joinCommand.textContent);
+      copyJoinCommand.textContent = '已复制';
+      setTimeout(() => { copyJoinCommand.textContent = '复制命令'; }, 1600);
+    } catch (_) {
+      showError('浏览器不允许自动复制，请手动选择命令。');
+    }
   });
   $('batch-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -270,11 +308,9 @@
   $('task-drawer-close').addEventListener('click', () => { drawer.hidden = true; });
   const topbarTools = document.createElement('div');
   topbarTools.className = 'topbar-tools';
-  topbarTools.innerHTML = '<button id="theme-toggle" class="icon-button" title="切换主题" aria-label="切换主题">☼</button><select id="refresh-interval" title="自动刷新间隔"><option value="0">手动刷新</option><option value="30">30 秒</option><option value="60">60 秒</option></select>';
+  topbarTools.innerHTML = '<select id="refresh-interval" title="自动刷新间隔"><option value="0">手动刷新</option><option value="30">30 秒</option><option value="60">60 秒</option></select>';
   $('refresh').parentElement.insertBefore(topbarTools, $('refresh'));
-  const storedTheme = localStorage.getItem('sbweb-theme') || 'dark';
-  document.documentElement.dataset.theme = storedTheme;
-  $('theme-toggle').addEventListener('click', () => { const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; document.documentElement.dataset.theme = theme; localStorage.setItem('sbweb-theme', theme); });
+  document.documentElement.dataset.theme = 'light';
   $('refresh-interval').addEventListener('change', (event) => { if (refreshTimer) clearInterval(refreshTimer); const seconds = Number(event.target.value); if (seconds > 0) refreshTimer = setInterval(load, seconds * 1000); });
   const navTitles = { overview: '总览', servers: '服务器', nodes: '节点与用户', 'quick-actions': '快捷操作', realm: 'Hysteria Realm', certificates: '节点证书', tasks: '任务与审计' };
   const closeSidebar = () => { $('sidebar').classList.remove('open'); $('scrim').hidden = true; $('menu-toggle').setAttribute('aria-expanded', 'false'); };
