@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Stop reusing stale ACME contact emails; public-IP issuance now registers without optional contact by default.
 - Make automatic ACME setup transactional so registration/issuance failures do not modify the active panel configuration.
 - Normalize ACME contact emails from interactive terminals before account registration.
 - Require HTTPS for controller installs and make automatic public-IPv4 ACME the default certificate choice.

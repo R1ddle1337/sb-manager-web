@@ -54,7 +54,7 @@ usage() {
   SBM_WEB_INIT_SYSTEM      强制 systemd/openrc（默认自动检测）
   SBM_WEB_TLS_MODE         auto/self-signed/acme-http/acme-dns-cloudflare/existing
   SBM_WEB_TLS_DOMAIN       面板证书的域名或 IP
-  SBM_WEB_TLS_EMAIL        ACME 账户邮箱
+  SBM_WEB_TLS_EMAIL        可选 ACME 联系邮箱
   SBM_WEB_TLS_CERT_FILE/KEY_FILE  已有证书和私钥绝对路径（existing）
   SBM_WEB_TLS_CF_TOKEN/ZONE_ID    Cloudflare DNS-01 凭据
   SBM_WEB_PUBLIC_IPV4       覆盖自动探测到的公网 IPv4
@@ -63,7 +63,7 @@ usage() {
 命令行证书选项：
   --panel-tls MODE          选择面板 TLS 流程
   --panel-domain DOMAIN     证书域名或 IP
-  --panel-email EMAIL       ACME 账户邮箱
+  --panel-email EMAIL       可选 ACME 联系邮箱
   --panel-cert PATH         已有证书链绝对路径
   --panel-key PATH          已有私钥绝对路径
   --panel-cf-token TOKEN    Cloudflare API Token
@@ -236,17 +236,6 @@ panel_public_ipv4() {
   return 1
 }
 
-panel_saved_acme_email() {
-  local account_conf="$PANEL_ACME_HOME/config/account.conf"
-  [[ -s "$account_conf" ]] || return 1
-  (
-    # acme.sh owns this root-only file and writes shell assignments.
-    # shellcheck disable=SC1090
-    source "$account_conf"
-    printf '%s\n' "${ACCOUNT_EMAIL:-}"
-  )
-}
-
 panel_normalize_email() {
   local email=$1 local_part domain
   email=${email//$'\r'/}
@@ -259,6 +248,14 @@ panel_normalize_email() {
   domain=${email##*@}
   [[ "$local_part" != "$email" ]] || { printf '%s\n' "$email"; return 0; }
   printf '%s@%s\n' "$local_part" "${domain,,}"
+}
+
+panel_clear_saved_acme_contacts() {
+  local file
+  [[ -d "$PANEL_ACME_HOME/config" ]] || return 0
+  while IFS= read -r file; do
+    sed -i '/^ACCOUNT_EMAIL=/d; /^CA_EMAIL=/d' "$file"
+  done < <(find "$PANEL_ACME_HOME/config" -type f \( -name account.conf -o -name ca.conf \) -print 2>/dev/null)
 }
 
 panel_default_identifier() {
@@ -306,7 +303,7 @@ panel_enable_public_listen_for_ip() {
 }
 
 panel_collect_tls_inputs() {
-  local detected_ip
+  local detected_ip email_domain email_tld
   case "$PANEL_TLS_MODE" in
     none)
       [[ -n "$AGENT_CONTROLLER" ]] && return 0
@@ -392,19 +389,18 @@ panel_collect_tls_inputs() {
         echo 'Cloudflare DNS-01 不能为 IP 标识申请证书；IP 证书请使用 acme-http 流程。' >&2
         return 1
       fi
-      if [[ -z "$PANEL_TLS_EMAIL" ]]; then
-        PANEL_TLS_EMAIL=$(panel_saved_acme_email || true)
+      if [[ -n "$PANEL_TLS_EMAIL" ]]; then
+        PANEL_TLS_EMAIL=$(panel_normalize_email "$PANEL_TLS_EMAIL")
+        email_domain=${PANEL_TLS_EMAIL##*@}
+        email_tld=${email_domain##*.}
+        [[ "$PANEL_TLS_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ && "$email_tld" =~ ^[A-Za-z0-9-]{2,63}$ ]] || {
+          echo 'ACME 账户邮箱格式无效；请使用真实公共域名邮箱，或不填写邮箱。' >&2
+          return 1
+        }
+        printf '使用 ACME 账户邮箱：%s\n' "$PANEL_TLS_EMAIL"
+      else
+        printf 'ACME 联系邮箱：未设置（可选，不影响证书签发）\n'
       fi
-      if [[ -z "$PANEL_TLS_EMAIL" ]]; then
-        panel_has_tty || { echo 'ACME 流程需要 --panel-email 或 SBM_WEB_TLS_EMAIL。' >&2; return 1; }
-        PANEL_TLS_EMAIL=$(panel_read_tty 'ACME 账户邮箱：')
-      fi
-      PANEL_TLS_EMAIL=$(panel_normalize_email "$PANEL_TLS_EMAIL")
-      [[ "$PANEL_TLS_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || {
-        echo 'ACME 账户邮箱格式无效。' >&2
-        return 1
-      }
-      printf '使用 ACME 账户邮箱：%s\n' "$PANEL_TLS_EMAIL"
       if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare && -z "$PANEL_TLS_CF_TOKEN" ]]; then
         panel_has_tty || { echo 'Cloudflare DNS-01 需要 --panel-cf-token 或 SBM_WEB_TLS_CF_TOKEN。' >&2; return 1; }
         PANEL_TLS_CF_TOKEN=$(panel_read_tty 'Cloudflare API Token（输入不会回显）：' 1)
@@ -443,6 +439,7 @@ panel_tls_paths() {
 
 panel_install_acme() {
   local tmpdir archive source actual
+  local -a install_args
   panel_acme_bin="$PANEL_ACME_HOME/acme.sh"
   [[ -x "$panel_acme_bin" ]] && return 0
   command -v tar >/dev/null 2>&1 || { echo 'ACME 流程需要 tar。' >&2; return 1; }
@@ -462,10 +459,11 @@ panel_install_acme() {
   source="$tmpdir/src/acme.sh"
   [[ -f "$source" ]] || { echo 'acme.sh 安装包不完整。' >&2; rm -rf "$tmpdir"; return 1; }
   mkdir -p "$PANEL_ACME_HOME"
+  install_args=(--install --home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --nocron --noprofile)
+  [[ -z "$PANEL_TLS_EMAIL" ]] || install_args+=(--accountemail "$PANEL_TLS_EMAIL")
   (
     cd "$tmpdir/src"
-    bash ./acme.sh --install --home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" \
-      --cert-home "$PANEL_ACME_HOME/certs" --accountemail "$PANEL_TLS_EMAIL" --nocron --noprofile
+    bash ./acme.sh "${install_args[@]}"
   )
   rm -rf "$tmpdir"
   [[ -x "$panel_acme_bin" ]] || { echo 'acme.sh 安装失败。' >&2; return 1; }
@@ -473,16 +471,24 @@ panel_install_acme() {
 }
 
 panel_register_acme_account() {
-  local account_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --server letsencrypt --accountemail "$PANEL_TLS_EMAIL")
-  printf '正在验证 ACME 账户邮箱并注册账户…\n'
+  local account_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --server letsencrypt)
+  panel_clear_saved_acme_contacts
+  [[ -z "$PANEL_TLS_EMAIL" ]] || account_args+=(--accountemail "$PANEL_TLS_EMAIL")
+  if [[ -n "$PANEL_TLS_EMAIL" ]]; then
+    printf '正在注册 ACME 账户并验证联系邮箱…\n'
+  else
+    printf '正在注册 ACME 账户（未设置联系邮箱）…\n'
+  fi
   "$panel_acme_bin" "${account_args[@]}" --register-account || {
-    echo "ACME 账户注册失败；面板配置未修改。请确认邮箱 $PANEL_TLS_EMAIL 可用后重试。" >&2
+    echo 'ACME 账户注册失败；面板配置未修改。' >&2
     return 1
   }
-  "$panel_acme_bin" "${account_args[@]}" --update-account || {
-    echo "ACME 账户联系邮箱更新失败；面板配置未修改。" >&2
-    return 1
-  }
+  if [[ -n "$PANEL_TLS_EMAIL" ]]; then
+    "$panel_acme_bin" "${account_args[@]}" --update-account || {
+      echo 'ACME 账户联系邮箱更新失败；面板配置未修改。' >&2
+      return 1
+    }
+  fi
 }
 
 panel_validate_certificate_pair() {
@@ -550,7 +556,8 @@ panel_acme_certificate() {
   local issue_args=() cert_new key_new reload_cmd issue_rc=0 install_rc=0
   panel_install_acme || return 1
   panel_register_acme_account || return 1
-  issue_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --issue -d "$PANEL_TLS_DOMAIN" --server letsencrypt --keylength ec-256 --accountemail "$PANEL_TLS_EMAIL")
+  issue_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --issue -d "$PANEL_TLS_DOMAIN" --server letsencrypt --keylength ec-256)
+  [[ -z "$PANEL_TLS_EMAIL" ]] || issue_args+=(--accountemail "$PANEL_TLS_EMAIL")
   if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]]; then
     export CF_Token="$PANEL_TLS_CF_TOKEN"
     [[ -n "$PANEL_TLS_CF_ZONE_ID" ]] && export CF_Zone_ID="$PANEL_TLS_CF_ZONE_ID"

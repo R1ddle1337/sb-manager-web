@@ -189,6 +189,9 @@ EOF_ACME
 chmod +x "$ROOT/acme.sh"
 mkdir -p "$ROOT/acme-home"
 cp -p "$ROOT/acme.sh" "$ROOT/acme-home/acme.sh"
+mkdir -p "$ROOT/acme-home/config/ca/example/directory"
+printf "ACCOUNT_EMAIL='2@a.c'\n" >"$ROOT/acme-home/config/account.conf"
+printf "CA_EMAIL='2@a.c'\n" >"$ROOT/acme-home/config/ca/example/directory/ca.conf"
 config_before_acme_failure=$(sha256sum "$ROOT/etc/sb-manager-web/config.json" | awk '{print $1}')
 set +e
 PATH="$ROOT/bin:/usr/bin:/bin" \
@@ -197,10 +200,11 @@ SBM_WEB_BINARY_URL="$ROOT/sb-web" \
 SBM_WEB_SKIP_VERIFY=1 \
 SBM_WEB_TLS_MODE=acme-auto \
 SBM_WEB_TLS_DOMAIN=IP \
-SBM_WEB_TLS_EMAIL=admin@example.com \
+SBM_WEB_TLS_EMAIL=$' admin@example.com\r ' \
 SBM_WEB_PUBLIC_IPV4=127.0.0.1 \
 SBM_WEB_ACME_HOME="$ROOT/acme-home" \
 SBM_TEST_ACME_FAIL_REGISTER=1 \
+SBM_TEST_ACME_EMAIL_CAPTURE="$ROOT/acme-email.txt" \
 SBM_WEB_PREFIX="$ROOT/usr/local" \
 SBM_WEB_ETC="$ROOT/etc/sb-manager-web" \
 SBM_WEB_VAR="$ROOT/var/lib/sb-manager-web" \
@@ -215,6 +219,11 @@ set -e
 [[ "$acme_register_rc" != 0 ]]
 [[ $(sha256sum "$ROOT/etc/sb-manager-web/config.json" | awk '{print $1}') == "$config_before_acme_failure" ]]
 grep -Fq 'ACME 账户注册失败；面板配置未修改' "$ROOT/acme-register-failure.out"
+[[ $(cat "$ROOT/acme-email.txt") == admin@example.com ]]
+
+printf "ACCOUNT_EMAIL='2@a.c'\n" >"$ROOT/acme-home/config/account.conf"
+printf "CA_EMAIL='2@a.c'\n" >"$ROOT/acme-home/config/ca/example/directory/ca.conf"
+rm -f "$ROOT/acme-email.txt"
 
 PATH="$ROOT/bin:/usr/bin:/bin" \
 SBM_WEB_VERSION=0.1.0 \
@@ -222,7 +231,6 @@ SBM_WEB_BINARY_URL="$ROOT/sb-web" \
 SBM_WEB_SKIP_VERIFY=1 \
 SBM_WEB_TLS_MODE=acme-auto \
 SBM_WEB_TLS_DOMAIN=IP \
-SBM_WEB_TLS_EMAIL=$' admin@example.com\r ' \
 SBM_WEB_PUBLIC_IPV4=127.0.0.1 \
 SBM_WEB_ACME_HOME="$ROOT/acme-home" \
 SBM_TEST_ACME_EMAIL_CAPTURE="$ROOT/acme-email.txt" \
@@ -245,8 +253,9 @@ jq -e '.listen == "0.0.0.0:9091"' "$ROOT/etc/sb-manager-web/config.json" >/dev/n
 test -x "$ROOT/usr/local/lib/sb-manager-web/reload-panel-certificate"
 grep -Fq '面板访问地址：https://127.0.0.1:9091' "$ROOT/acme-install.out"
 grep -Fq '请确认云安全组和系统防火墙已放行 TCP 9091' "$ROOT/acme-install.out"
-[[ $(cat "$ROOT/acme-email.txt") == admin@example.com ]]
-grep -Fq '使用 ACME 账户邮箱：admin@example.com' "$ROOT/acme-install.out"
+test ! -e "$ROOT/acme-email.txt"
+grep -Fq 'ACME 联系邮箱：未设置（可选，不影响证书签发）' "$ROOT/acme-install.out"
+if grep -RE '^(ACCOUNT_EMAIL|CA_EMAIL)=' "$ROOT/acme-home/config" >/dev/null; then exit 1; fi
 
 PATH="$ROOT/bin:/usr/bin:/bin" \
 SBM_WEB_VERSION=0.1.0 \
