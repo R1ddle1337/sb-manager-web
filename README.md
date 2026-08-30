@@ -64,7 +64,7 @@ curl -fsSL https://github.com/R1ddle1337/sb-manager-web/raw/main/install.sh | su
 
 如果服务器尚未安装 `sb-manager`，Web 安装器会下载并调用 [`sb-manager`](https://github.com/R1ddle1337/sb-manager) 独立仓库的官方安装器；不会把它的源码、服务定义或业务逻辑复制到 Web 项目。可以用 `SBM_INSTALL_REF`/`SBM_INSTALL_SHA256` 固定上游版本，用 `SBM_WEB_SB_INSTALL_URL` 指定内部镜像，或用 `SBM_WEB_AUTO_INSTALL_SB=0` 要求预先供应依赖。
 
-安装器会校验 Web 发布包 SHA256，并且只为当前实际运行的 systemd 或 OpenRC 生成服务。当前预览版本为 `0.1.0-alpha.17`，开发时可以使用：
+安装器会校验 Web 发布包 SHA256，并且只为当前实际运行的 systemd 或 OpenRC 生成服务。当前预览版本为 `0.1.0-alpha.19`，开发时可以使用：
 
 ```bash
 SBM_WEB_BINARY_URL=/path/to/sb-web SBM_WEB_SKIP_VERIFY=1 sudo -E bash install.sh --no-start

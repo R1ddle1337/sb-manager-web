@@ -162,19 +162,17 @@ panel_choose_tls_mode() {
   {
     printf '\n面板 HTTPS 证书设置（可稍后通过反向代理配置）：\n'
     printf '  1) 暂不启用 HTTPS（默认）\n'
-    printf '  2) 生成自签名证书（适合 IP/内网，浏览器会提示不受信任）\n'
-    printf "  3) Let's Encrypt HTTP-01（域名或 IP，需公网 80 端口）\n"
-    printf "  4) Let's Encrypt DNS-01（Cloudflare，适合域名/泛域名）\n"
-    printf '  5) 使用已有证书和私钥\n'
-    printf '请选择 [1-5]：'
+    printf '  2) 自动申请证书（输入域名/IP，再选择 HTTP-01 或 Cloudflare DNS-01）\n'
+    printf '  3) 生成自签名证书（适合 IP/内网，浏览器会提示不受信任）\n'
+    printf '  4) 使用已有证书和私钥（输入绝对路径）\n'
+    printf '请选择 [1-4]：'
   } >/dev/tty
   local choice
   choice=$(panel_read_tty '' 0)
   case "$choice" in
-    2) PANEL_TLS_MODE=self-signed;;
-    3) PANEL_TLS_MODE=acme-http;;
-    4) PANEL_TLS_MODE=acme-dns-cloudflare;;
-    5) PANEL_TLS_MODE=existing;;
+    2) PANEL_TLS_MODE=acme-auto;;
+    3) PANEL_TLS_MODE=self-signed;;
+    4) PANEL_TLS_MODE=existing;;
     *) PANEL_TLS_MODE=none;;
   esac
 }
@@ -223,12 +221,24 @@ panel_collect_tls_inputs() {
     self-signed)
       [[ -n "$PANEL_TLS_DOMAIN" ]] || PANEL_TLS_DOMAIN=$(panel_default_identifier)
       ;;
-    acme-http|acme-dns-cloudflare)
+    acme-auto|acme-http|acme-dns-cloudflare)
       if [[ -z "$PANEL_TLS_DOMAIN" ]]; then
         panel_has_tty || { echo 'ACME 流程需要 --panel-domain 或 SBM_WEB_TLS_DOMAIN。' >&2; return 1; }
         PANEL_TLS_DOMAIN=$(panel_read_tty '面板域名或 IP：')
       fi
       panel_validate_identifier "$PANEL_TLS_DOMAIN" || return 1
+      if [[ "$PANEL_TLS_MODE" == acme-auto ]]; then
+        if panel_is_ip "$PANEL_TLS_DOMAIN"; then
+          PANEL_TLS_MODE=acme-http
+        else
+          panel_has_tty || { echo '自动 ACME 流程需要选择 HTTP-01 或 Cloudflare DNS-01。' >&2; return 1; }
+          printf '1) HTTP-01（需要公网 80 端口）\n2) Cloudflare DNS-01（支持泛域名）\n请选择 [1-2]：' >/dev/tty
+          case "$(panel_read_tty '' 0)" in
+            2) PANEL_TLS_MODE=acme-dns-cloudflare;;
+            *) PANEL_TLS_MODE=acme-http;;
+          esac
+        fi
+      fi
       if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]] && panel_is_ip "$PANEL_TLS_DOMAIN"; then
         echo 'Cloudflare DNS-01 不能为 IP 标识申请证书；IP 证书请使用 acme-http 流程。' >&2
         return 1

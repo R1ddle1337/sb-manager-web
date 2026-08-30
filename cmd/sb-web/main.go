@@ -290,7 +290,7 @@ func menu() error {
 				fmt.Fprintf(os.Stderr, "TLS 配置读取失败：%v\n", err)
 			}
 		case "8":
-			if err := uninstallWeb(nil); err != nil {
+			if err := uninstallMenu(reader); err != nil {
 				fmt.Fprintf(os.Stderr, "卸载失败：%v\n", err)
 			}
 			if webUninstalled {
@@ -299,6 +299,28 @@ func menu() error {
 		default:
 			fmt.Fprintln(os.Stderr, "选择无效，请输入 0-8。")
 		}
+	}
+}
+
+func uninstallMenu(reader *bufio.Reader) error {
+	fmt.Println("\n卸载 Web 面板：")
+	fmt.Println("  1. 卸载程序，保留配置、数据库、证书和日志")
+	fmt.Println("  2. 完全卸载，删除全部 Web 数据")
+	fmt.Println("  0. 返回")
+	fmt.Print("请选择 [0-2]: ")
+	choice, err := reader.ReadString('\n')
+	if err != nil {
+		return err
+	}
+	switch strings.TrimSpace(choice) {
+	case "0":
+		return nil
+	case "1":
+		return uninstallWeb(nil)
+	case "2":
+		return uninstallWeb([]string{"--purge"})
+	default:
+		return errors.New("选择无效，请输入 0-2")
 	}
 }
 
