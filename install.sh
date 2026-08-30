@@ -137,7 +137,7 @@ cleanup_legacy_openrc_services() {
 }
 
 panel_has_tty() {
-  [[ -r /dev/tty && -t /dev/tty ]]
+  [[ -t 0 || -t 1 || -t 2 ]]
 }
 
 panel_read_tty() {
