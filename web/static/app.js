@@ -276,7 +276,7 @@
   document.documentElement.dataset.theme = storedTheme;
   $('theme-toggle').addEventListener('click', () => { const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; document.documentElement.dataset.theme = theme; localStorage.setItem('sbweb-theme', theme); });
   $('refresh-interval').addEventListener('change', (event) => { if (refreshTimer) clearInterval(refreshTimer); const seconds = Number(event.target.value); if (seconds > 0) refreshTimer = setInterval(load, seconds * 1000); });
-  const navTitles = { overview: '总览', servers: '服务器', nodes: '节点与用户', 'quick-actions': '快捷操作', realm: 'Hysteria Realm', certificates: '证书', tasks: '任务与审计' };
+  const navTitles = { overview: '总览', servers: '服务器', nodes: '节点与用户', 'quick-actions': '快捷操作', realm: 'Hysteria Realm', certificates: '节点证书', tasks: '任务与审计' };
   const closeSidebar = () => { $('sidebar').classList.remove('open'); $('scrim').hidden = true; $('menu-toggle').setAttribute('aria-expanded', 'false'); };
   $('menu-toggle').addEventListener('click', () => { const open = !$('sidebar').classList.contains('open'); $('sidebar').classList.toggle('open', open); $('scrim').hidden = !open; $('menu-toggle').setAttribute('aria-expanded', String(open)); });
   $('scrim').addEventListener('click', closeSidebar);

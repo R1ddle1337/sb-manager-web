@@ -118,7 +118,12 @@ func serve(args []string) error {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
+	scheme := "http"
+	if cfg.TLS.Enabled {
+		scheme = "https"
+	}
 	fmt.Printf("sb-manager-web listening on %s\n", cfg.Listen)
+	fmt.Printf("面板访问地址：%s://%s\n", scheme, cfg.Listen)
 	if cfg.TLS.Enabled {
 		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
 			return errors.New("tls enabled but cert_file/key_file are empty")
@@ -162,7 +167,11 @@ func initialize(args []string) error {
 		return err
 	}
 	if credential.Password == "" {
-		fmt.Println("WebUI 已初始化；管理员密码已存在，请使用 reset-admin-password 重置。")
+		username, usernameErr := auth.New(store).AdminUsername()
+		if usernameErr == nil {
+			fmt.Printf("管理员账号：%s\n", username)
+		}
+		fmt.Println("管理员密码已存在且不会回显；需要重置时运行：sb-web reset-admin-password")
 	} else {
 		fmt.Printf("首次管理员账号：%s\n首次管理员密码：%s\n请登录后立即修改密码。\n", credential.Username, credential.Password)
 	}

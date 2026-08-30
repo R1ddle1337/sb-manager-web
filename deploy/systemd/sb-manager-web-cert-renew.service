@@ -1,0 +1,8 @@
+[Unit]
+Description=sb-manager WebUI panel certificate renewal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/var/lib/sb-manager-web/acme-panel/acme.sh --home /var/lib/sb-manager-web/acme-panel --config-home /var/lib/sb-manager-web/acme-panel/config --cert-home /var/lib/sb-manager-web/acme-panel/certs --cron

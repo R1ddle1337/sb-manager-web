@@ -49,6 +49,14 @@ The Web service runs as the unprivileged `sbweb` user. A separate root helper ow
 - service sandboxing;
 - bounded command output and timeouts.
 
+The installer can configure the panel's own HTTPS listener independently of
+node certificates: a self-signed certificate (including IP SANs), ACME
+HTTP-01 for a domain or supported IP identifier, ACME DNS-01 through
+Cloudflare, or an existing certificate/key pair. Panel keys are stored under
+the Web configuration directory with service-user read permission; ACME
+account material remains root-only, and renewal is handled by the generated
+systemd timer/OpenRC periodic job.
+
 To turn on enforced Agent mTLS, set `tls.enabled=true`, provide the WebUI
 server certificate/key, and set `tls.require_agent_mtls=true`. If
 `client_ca_file` and `client_ca_key_file` are empty, the controller creates a

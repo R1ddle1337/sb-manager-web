@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add panel TLS setup flows (self-signed IP SAN, ACME HTTP-01/DNS-01 and existing certificates), renewal scheduling, SSH install summary, and repeatable administrator account guidance.
 - Let the Web installer bootstrap a missing sb-manager from its independent upstream installer, and avoid writing OpenRC scripts into Debian's SysV compatibility directory.
 - Add optional controller-issued Agent mTLS certificates with automatic rotation, while retaining Ed25519 request signatures.
 - Add state-file digest drift protection, task cancel/retry/requeue-on-restart, gray batch strategies and role-based users.

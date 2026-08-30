@@ -10,19 +10,38 @@ VAR_DIR=${SBM_WEB_VAR:-/var/lib/sb-manager-web}
 LOG_DIR=${SBM_WEB_LOG:-/var/log/sb-manager-web}
 SYSTEMD_DIR=${SBM_WEB_SYSTEMD_DIR:-/etc/systemd/system}
 OPENRC_DIR=${SBM_WEB_OPENRC_DIR:-/etc/init.d}
+PERIODIC_DIR=${SBM_WEB_PERIODIC_DIR:-/etc/periodic}
 SERVICE_USER=${SBM_WEB_SERVICE_USER:-sbweb}
 VERSION=${SBM_WEB_VERSION:-latest}
 REPO=${SBM_WEB_REPO:-R1ddle1337/sb-manager-web}
 SB_INSTALL_URL=${SBM_WEB_SB_INSTALL_URL:-https://raw.githubusercontent.com/R1ddle1337/sb-manager/main/install.sh}
 INIT_SYSTEM=${SBM_WEB_INIT_SYSTEM:-auto}
+PANEL_TLS_MODE=${SBM_WEB_TLS_MODE:-auto}
+PANEL_TLS_DOMAIN=${SBM_WEB_TLS_DOMAIN:-}
+PANEL_TLS_EMAIL=${SBM_WEB_TLS_EMAIL:-}
+PANEL_TLS_CERT_FILE=${SBM_WEB_TLS_CERT_FILE:-}
+PANEL_TLS_KEY_FILE=${SBM_WEB_TLS_KEY_FILE:-}
+PANEL_TLS_CF_TOKEN=${SBM_WEB_TLS_CF_TOKEN:-}
+PANEL_TLS_CF_ZONE_ID=${SBM_WEB_TLS_CF_ZONE_ID:-}
+PANEL_LISTEN=${SBM_WEB_LISTEN:-127.0.0.1:9091}
+PANEL_ACME_HOME=${SBM_WEB_ACME_HOME:-$VAR_DIR/acme-panel}
+PANEL_ACME_COMMIT=${SBM_WEB_ACME_COMMIT:-3661fd86b6304115e42f43910e6dd452ab9866d6}
+PANEL_ACME_SHA256=${SBM_WEB_ACME_SHA256:-9af3ad3d775a5782246df4cdd4b4e7b9b3179deb63c509b10e3ba0433093a884}
+panel_listen_override=0
+if [[ -n ${SBM_WEB_LISTEN+x} ]]; then panel_listen_override=1; fi
 NO_START=0
 AGENT_CONTROLLER=''
 AGENT_TOKEN=''
+initial_credential_output=''
+panel_tls_enabled=0
+panel_acme_enabled=0
+panel_acme_bin=''
 
 usage() {
   cat <<'EOF'
 用法：sudo ./install.sh [--version VERSION] [--no-start]
       sudo ./install.sh --agent CONTROLLER_URL ENROLLMENT_TOKEN
+      sudo ./install.sh --panel-tls MODE [--panel-domain DOMAIN] [--panel-email EMAIL]
 
 环境变量：
   SBM_WEB_BINARY_URL       直接指定二进制地址
@@ -32,6 +51,22 @@ usage() {
   SBM_WEB_SB_INSTALL_URL   sb-manager 独立安装器地址
   SBM_WEB_AUTO_INSTALL_SB=0  禁用缺失依赖时的自动安装
   SBM_WEB_INIT_SYSTEM      强制 systemd/openrc（默认自动检测）
+  SBM_WEB_TLS_MODE         auto/none/self-signed/acme-http/acme-dns-cloudflare/existing
+  SBM_WEB_TLS_DOMAIN       面板证书的域名或 IP
+  SBM_WEB_TLS_EMAIL        ACME 账户邮箱
+  SBM_WEB_TLS_CERT_FILE/KEY_FILE  已有证书和私钥路径（existing）
+  SBM_WEB_TLS_CF_TOKEN/ZONE_ID    Cloudflare DNS-01 凭据
+  SBM_WEB_LISTEN           面板监听地址（默认 127.0.0.1:9091）
+
+命令行证书选项：
+  --panel-tls MODE          选择面板 TLS 流程
+  --panel-domain DOMAIN     证书域名或 IP
+  --panel-email EMAIL       ACME 账户邮箱
+  --panel-cert PATH         已有证书链
+  --panel-key PATH          已有私钥
+  --panel-cf-token TOKEN    Cloudflare API Token
+  --panel-cf-zone-id ID     Cloudflare Zone ID（可选）
+  --panel-listen ADDRESS    覆盖面板监听地址
 
 --agent 会安装二进制、完成一次性注册并只启动 Agent 服务。
 EOF
@@ -101,10 +136,364 @@ cleanup_legacy_openrc_services() {
   done
 }
 
+panel_has_tty() {
+  [[ -r /dev/tty && -t /dev/tty ]]
+}
+
+panel_read_tty() {
+  local prompt=$1 secret=${2:-0} value=''
+  printf '%s' "$prompt" >/dev/tty
+  if [[ "$secret" == 1 ]]; then
+    IFS= read -r -s value </dev/tty
+    printf '\n' >/dev/tty
+  else
+    IFS= read -r value </dev/tty
+  fi
+  printf '%s' "$value"
+}
+
+panel_choose_tls_mode() {
+  [[ "$PANEL_TLS_MODE" == auto ]] || return 0
+  [[ -n "$AGENT_CONTROLLER" ]] && { PANEL_TLS_MODE=none; return 0; }
+  if ! panel_has_tty; then
+    PANEL_TLS_MODE=none
+    return 0
+  fi
+  {
+    printf '\n面板 HTTPS 证书设置（可稍后通过反向代理配置）：\n'
+    printf '  1) 暂不启用 HTTPS（默认）\n'
+    printf '  2) 生成自签名证书（适合 IP/内网，浏览器会提示不受信任）\n'
+    printf "  3) Let's Encrypt HTTP-01（域名或 IP，需公网 80 端口）\n"
+    printf "  4) Let's Encrypt DNS-01（Cloudflare，适合域名/泛域名）\n"
+    printf '  5) 使用已有证书和私钥\n'
+    printf '请选择 [1-5]：'
+  } >/dev/tty
+  local choice
+  choice=$(panel_read_tty '' 0)
+  case "$choice" in
+    2) PANEL_TLS_MODE=self-signed;;
+    3) PANEL_TLS_MODE=acme-http;;
+    4) PANEL_TLS_MODE=acme-dns-cloudflare;;
+    5) PANEL_TLS_MODE=existing;;
+    *) PANEL_TLS_MODE=none;;
+  esac
+}
+
+panel_is_ipv4() {
+  local value=$1 octet
+  local -a octets
+  [[ "$value" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || return 1
+  IFS=. read -r -a octets <<<"$value"
+  ((${#octets[@]} == 4)) || return 1
+  for octet in "${octets[@]}"; do
+    [[ "$octet" =~ ^[0-9]{1,3}$ ]] || return 1
+    ((10#$octet <= 255)) || return 1
+  done
+}
+
+panel_is_ip() {
+  panel_is_ipv4 "$1" || { [[ "$1" == *:* && "$1" =~ ^[0-9A-Fa-f:.]+$ ]]; }
+}
+
+panel_default_identifier() {
+  local address=''
+  if command -v ip >/dev/null 2>&1; then
+    address=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')
+  fi
+  if [[ -z "$address" ]] && command -v hostname >/dev/null 2>&1; then
+    address=$(hostname -I 2>/dev/null | awk '{print $1}')
+  fi
+  printf '%s\n' "${address:-127.0.0.1}"
+}
+
+panel_validate_identifier() {
+  local identifier=$1
+  if panel_is_ip "$identifier"; then
+    return 0
+  fi
+  [[ "$identifier" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || {
+    echo "面板证书标识符无效：$identifier" >&2
+    return 1
+  }
+}
+
+panel_collect_tls_inputs() {
+  case "$PANEL_TLS_MODE" in
+    none|auto) return 0;;
+    self-signed)
+      [[ -n "$PANEL_TLS_DOMAIN" ]] || PANEL_TLS_DOMAIN=$(panel_default_identifier)
+      ;;
+    acme-http|acme-dns-cloudflare)
+      if [[ -z "$PANEL_TLS_DOMAIN" ]]; then
+        panel_has_tty || { echo 'ACME 流程需要 --panel-domain 或 SBM_WEB_TLS_DOMAIN。' >&2; return 1; }
+        PANEL_TLS_DOMAIN=$(panel_read_tty '面板域名或 IP：')
+      fi
+      panel_validate_identifier "$PANEL_TLS_DOMAIN" || return 1
+      if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]] && panel_is_ip "$PANEL_TLS_DOMAIN"; then
+        echo 'Cloudflare DNS-01 不能为 IP 标识申请证书；IP 证书请使用 acme-http 流程。' >&2
+        return 1
+      fi
+      if [[ -z "$PANEL_TLS_EMAIL" ]]; then
+        panel_has_tty || { echo 'ACME 流程需要 --panel-email 或 SBM_WEB_TLS_EMAIL。' >&2; return 1; }
+        PANEL_TLS_EMAIL=$(panel_read_tty 'ACME 账户邮箱：')
+      fi
+      [[ "$PANEL_TLS_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || {
+        echo 'ACME 账户邮箱格式无效。' >&2
+        return 1
+      }
+      if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare && -z "$PANEL_TLS_CF_TOKEN" ]]; then
+        panel_has_tty || { echo 'Cloudflare DNS-01 需要 --panel-cf-token 或 SBM_WEB_TLS_CF_TOKEN。' >&2; return 1; }
+        PANEL_TLS_CF_TOKEN=$(panel_read_tty 'Cloudflare API Token（输入不会回显）：' 1)
+      fi
+      ;;
+    existing)
+      [[ -n "$PANEL_TLS_CERT_FILE" && -n "$PANEL_TLS_KEY_FILE" ]] || {
+        echo 'existing 流程需要 --panel-cert/--panel-key 或 SBM_WEB_TLS_CERT_FILE/KEY_FILE。' >&2
+        return 1
+      }
+      ;;
+    *)
+      echo "面板 TLS 模式无效：$PANEL_TLS_MODE（可用 none、self-signed、acme-http、acme-dns-cloudflare、existing）" >&2
+      return 1
+      ;;
+  esac
+}
+
+panel_tls_paths() {
+  PANEL_TLS_DIR="$ETC_DIR/tls"
+  PANEL_TLS_CERT_PATH="$PANEL_TLS_DIR/fullchain.pem"
+  PANEL_TLS_KEY_PATH="$PANEL_TLS_DIR/key.pem"
+}
+
+panel_install_acme() {
+  local tmpdir archive source actual
+  panel_acme_bin="$PANEL_ACME_HOME/acme.sh"
+  [[ -x "$panel_acme_bin" ]] && return 0
+  command -v tar >/dev/null 2>&1 || { echo 'ACME 流程需要 tar。' >&2; return 1; }
+  tmpdir=$(mktemp -d)
+  archive="$tmpdir/acme.tar.gz"
+  curl --fail --silent --show-error --location --retry 3 --retry-delay 2 \
+    --connect-timeout 15 --proto '=https' --tlsv1.2 \
+    "https://github.com/acmesh-official/acme.sh/archive/$PANEL_ACME_COMMIT.tar.gz" -o "$archive"
+  actual=$(sha256sum "$archive" | awk '{print $1}')
+  [[ "$actual" == "$PANEL_ACME_SHA256" ]] || {
+    echo 'acme.sh 下载摘要不匹配，已拒绝执行。' >&2
+    rm -rf "$tmpdir"
+    return 1
+  }
+  mkdir -p "$tmpdir/src"
+  tar -xzf "$archive" -C "$tmpdir/src" --strip-components=1
+  source="$tmpdir/src/acme.sh"
+  [[ -f "$source" ]] || { echo 'acme.sh 安装包不完整。' >&2; rm -rf "$tmpdir"; return 1; }
+  mkdir -p "$PANEL_ACME_HOME"
+  (
+    cd "$tmpdir/src"
+    bash ./acme.sh --install --home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" \
+      --cert-home "$PANEL_ACME_HOME/certs" --accountemail "$PANEL_TLS_EMAIL" --nocron --noprofile
+  )
+  rm -rf "$tmpdir"
+  [[ -x "$panel_acme_bin" ]] || { echo 'acme.sh 安装失败。' >&2; return 1; }
+  chmod 0700 "$PANEL_ACME_HOME"
+}
+
+panel_validate_certificate_pair() {
+  local cert=$1 key=$2 cert_pub key_pub
+  [[ -s "$cert" && -s "$key" ]] || { echo '面板证书或私钥文件为空。' >&2; return 1; }
+  openssl x509 -in "$cert" -noout >/dev/null 2>&1 || { echo '面板证书 PEM 无效。' >&2; return 1; }
+  openssl pkey -in "$key" -noout >/dev/null 2>&1 || { echo '面板私钥 PEM 无效或需要密码。' >&2; return 1; }
+  cert_pub=$(openssl x509 -in "$cert" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+  key_pub=$(openssl pkey -in "$key" -pubout -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+  [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]] || { echo '面板证书与私钥不匹配。' >&2; return 1; }
+}
+
+panel_copy_certificate_pair() {
+  local cert=$1 key=$2
+  panel_validate_certificate_pair "$cert" "$key" || return 1
+  mkdir -p "$PANEL_TLS_DIR"
+  chmod 0750 "$PANEL_TLS_DIR"
+  install -m 0644 "$cert" "$PANEL_TLS_CERT_PATH.new"
+  install -m 0640 "$key" "$PANEL_TLS_KEY_PATH.new"
+  mv -f "$PANEL_TLS_CERT_PATH.new" "$PANEL_TLS_CERT_PATH"
+  mv -f "$PANEL_TLS_KEY_PATH.new" "$PANEL_TLS_KEY_PATH"
+}
+
+panel_self_signed_certificate() {
+  local tmpdir san_type
+  panel_validate_identifier "$PANEL_TLS_DOMAIN" || return 1
+  tmpdir=$(mktemp -d)
+  if panel_is_ip "$PANEL_TLS_DOMAIN"; then san_type=IP; else san_type=DNS; fi
+  openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+    -subj "/CN=$PANEL_TLS_DOMAIN" \
+    -addext "subjectAltName=$san_type:$PANEL_TLS_DOMAIN" \
+    -keyout "$tmpdir/key.pem" -out "$tmpdir/fullchain.pem" >/dev/null 2>&1
+  panel_copy_certificate_pair "$tmpdir/fullchain.pem" "$tmpdir/key.pem"
+  rm -rf "$tmpdir"
+}
+
+panel_acme_certificate() {
+  local issue_args=() cert_new key_new
+  panel_install_acme || return 1
+  issue_args=(--home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" --issue -d "$PANEL_TLS_DOMAIN" --server letsencrypt --keylength ec-256 --accountemail "$PANEL_TLS_EMAIL")
+  if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare ]]; then
+    export CF_Token="$PANEL_TLS_CF_TOKEN"
+    [[ -n "$PANEL_TLS_CF_ZONE_ID" ]] && export CF_Zone_ID="$PANEL_TLS_CF_ZONE_ID"
+    issue_args+=(--dns dns_cf)
+  else
+    issue_args+=(--standalone)
+  fi
+  if panel_is_ip "$PANEL_TLS_DOMAIN"; then
+    issue_args+=(--cert-profile shortlived)
+  fi
+  "$panel_acme_bin" "${issue_args[@]}"
+  mkdir -p "$PANEL_TLS_DIR"
+  cert_new="$PANEL_TLS_CERT_PATH.new"
+  key_new="$PANEL_TLS_KEY_PATH.new"
+  "$panel_acme_bin" --home "$PANEL_ACME_HOME" --config-home "$PANEL_ACME_HOME/config" --cert-home "$PANEL_ACME_HOME/certs" \
+    --install-cert -d "$PANEL_TLS_DOMAIN" --ecc --fullchain-file "$cert_new" --key-file "$key_new" \
+    --reloadcmd "$BIN_DIR/sb-web restart"
+  panel_validate_certificate_pair "$cert_new" "$key_new" || return 1
+  mv -f "$cert_new" "$PANEL_TLS_CERT_PATH"
+  mv -f "$key_new" "$PANEL_TLS_KEY_PATH"
+  touch "$PANEL_ACME_HOME/panel-certificate"
+  unset CF_Token CF_Zone_ID
+  panel_acme_enabled=1
+}
+
+panel_configure_tls() {
+  local tmpcfg
+  command -v jq >/dev/null 2>&1 || { echo '配置面板 TLS 需要 jq。' >&2; return 1; }
+  tmpcfg=$(mktemp "$ETC_DIR/.config.XXXXXX")
+  jq --arg cert "$PANEL_TLS_CERT_PATH" --arg key "$PANEL_TLS_KEY_PATH" \
+    '.tls.enabled=true | .tls.cert_file=$cert | .tls.key_file=$key' \
+    "$ETC_DIR/config.json" >"$tmpcfg"
+  chmod 0600 "$tmpcfg"
+  mv -f "$tmpcfg" "$ETC_DIR/config.json"
+  panel_tls_enabled=1
+}
+
+panel_configure_listen() {
+  local tmpcfg
+  ((panel_listen_override == 1)) || return 0
+  command -v jq >/dev/null 2>&1 || { echo '覆盖面板监听地址需要 jq。' >&2; return 1; }
+  tmpcfg=$(mktemp "$ETC_DIR/.config.XXXXXX")
+  jq --arg listen "$PANEL_LISTEN" '.listen=$listen' "$ETC_DIR/config.json" >"$tmpcfg"
+  chmod 0600 "$tmpcfg"
+  mv -f "$tmpcfg" "$ETC_DIR/config.json"
+}
+
+panel_tls_setup() {
+  panel_choose_tls_mode
+  panel_collect_tls_inputs || return 1
+  panel_tls_paths
+  if [[ "$PANEL_TLS_MODE" != none && "$PANEL_TLS_MODE" != auto ]]; then
+    command -v jq >/dev/null 2>&1 || { echo '面板 TLS 流程需要 jq。' >&2; return 1; }
+    command -v openssl >/dev/null 2>&1 || { echo '面板 TLS 流程需要 openssl。' >&2; return 1; }
+  fi
+  case "$PANEL_TLS_MODE" in
+    none|auto) return 0;;
+    self-signed) panel_self_signed_certificate;;
+    acme-http|acme-dns-cloudflare) panel_acme_certificate;;
+    existing) panel_copy_certificate_pair "$PANEL_TLS_CERT_FILE" "$PANEL_TLS_KEY_FILE";;
+  esac
+  panel_configure_tls
+}
+
+panel_validate_listen() {
+  local value=$1 host port
+  if [[ "$value" == \[*\]:* ]]; then
+    host=${value%%\]*}; host=${host#\[}
+    port=${value##*:}
+    [[ "$host" == *:* && "$host" =~ ^[0-9A-Fa-f:.]+$ ]] || { echo "面板监听地址无效：$value" >&2; return 1; }
+  else
+    [[ "$value" == *:* ]] || { echo "面板监听地址需要 HOST:PORT：$value" >&2; return 1; }
+    host=${value%:*}
+    port=${value##*:}
+    [[ -z "$host" || "$host" == 0.0.0.0 || "$host" == localhost || "$host" =~ ^[A-Za-z0-9.-]+$ ]] || {
+      echo "面板监听主机无效：$host" >&2
+      return 1
+    }
+  fi
+  if [[ ! "$port" =~ ^[0-9]+$ ]] || ((port < 1 || port > 65535)); then
+    echo "面板监听端口无效：$port" >&2
+    return 1
+  fi
+}
+
+primary_address() {
+  local address=''
+  if command -v ip >/dev/null 2>&1; then
+    address=$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')
+  fi
+  if [[ -z "$address" ]] && command -v hostname >/dev/null 2>&1; then
+    address=$(hostname -I 2>/dev/null | awk '{print $1}')
+  fi
+  printf '%s\n' "${address:-服务器公网 IP}"
+}
+
+print_install_summary() {
+  local listen_value scheme host port display_host config_tls
+  listen_value="$PANEL_LISTEN"
+  if command -v jq >/dev/null 2>&1 && [[ -s "$ETC_DIR/config.json" ]]; then
+    listen_value=$(jq -r '.listen // empty' "$ETC_DIR/config.json" 2>/dev/null || true)
+    [[ -n "$listen_value" ]] || listen_value="$PANEL_LISTEN"
+    config_tls=$(jq -r '.tls.enabled // false' "$ETC_DIR/config.json" 2>/dev/null || printf 'false')
+  else
+    config_tls=$panel_tls_enabled
+  fi
+  scheme=http
+  [[ "$config_tls" == true || "$panel_tls_enabled" == 1 ]] && scheme=https
+  if [[ "$listen_value" == \[*\]*:* ]]; then
+    host=${listen_value%%\]*}; host=${host#\[}
+    port=${listen_value##*:}
+  else
+    host=${listen_value%:*}
+    port=${listen_value##*:}
+  fi
+  [[ -n "$port" && "$port" != "$listen_value" ]] || port=9091
+  if [[ -z "$host" || "$host" == 0.0.0.0 || "$host" == :: ]]; then
+    display_host=$(primary_address)
+  else
+    display_host="$host"
+  fi
+  if [[ "$display_host" == *:* ]]; then display_host="[$display_host]"; fi
+
+  printf '\n================ sb-manager-web 安装完成 ================\n'
+  if [[ -n "$initial_credential_output" ]]; then
+    printf '%s\n' "$initial_credential_output"
+  elif [[ -z "$AGENT_CONTROLLER" ]]; then
+    printf '管理员账号已存在，密码不会重复显示。需要重置时运行：sb-web reset-admin-password\n'
+  else
+    printf '这是 Agent 节点安装，不创建本机面板管理员账号。\n'
+  fi
+  printf '面板访问地址：%s://%s:%s\n' "$scheme" "$display_host" "$port"
+  if [[ "$host" == 127.0.0.1 || "$host" == ::1 || "$host" == localhost ]]; then
+    printf '当前仅监听本机；远程访问可建立 SSH 隧道：ssh -N -L %s:127.0.0.1:%s root@服务器公网IP\n' "$port" "$port"
+  fi
+  if [[ "$scheme" == https && "$PANEL_TLS_MODE" == self-signed ]]; then
+    printf '当前使用自签名证书，首次访问时浏览器会显示证书警告。\n'
+  fi
+  if [[ "$panel_acme_enabled" == 1 ]]; then
+    printf '面板 ACME 证书已配置自动续期。\n'
+    if [[ "$PANEL_TLS_MODE" == acme-http ]] && panel_is_ip "$PANEL_TLS_DOMAIN"; then
+      printf '这是 IP short-lived 证书，续期依赖面板自动续期任务，请勿停用该任务。\n'
+    fi
+  fi
+  printf '面板服务管理（仅面板）：sb-web enable | sb-web restart | sb-web logs\n'
+  printf '底层 sing-box 管理属于独立项目，命令名为 sb；面板不需要用它启动。\n'
+}
+
 while (($#)); do
   case "$1" in
     --version) VERSION=${2:?}; shift 2;;
     --no-start) NO_START=1; shift;;
+    --panel-tls) PANEL_TLS_MODE=${2:?}; shift 2;;
+    --panel-domain) PANEL_TLS_DOMAIN=${2:?}; shift 2;;
+    --panel-email) PANEL_TLS_EMAIL=${2:?}; shift 2;;
+    --panel-cert) PANEL_TLS_CERT_FILE=${2:?}; shift 2;;
+    --panel-key) PANEL_TLS_KEY_FILE=${2:?}; shift 2;;
+    --panel-cf-token) PANEL_TLS_CF_TOKEN=${2:?}; shift 2;;
+    --panel-cf-zone-id) PANEL_TLS_CF_ZONE_ID=${2:?}; shift 2;;
+    --panel-listen) PANEL_LISTEN=${2:?}; panel_listen_override=1; shift 2;;
     --agent) AGENT_CONTROLLER=${2:?}; AGENT_TOKEN=${3:?}; shift 3;;
     -h|--help) usage; exit 0;;
     *) echo "未知参数：$1" >&2; usage; exit 2;;
@@ -113,6 +502,7 @@ done
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo '请使用 root/sudo 运行。' >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo '缺少 curl。' >&2; exit 1; }
+panel_validate_listen "$PANEL_LISTEN"
 if ! command -v sb >/dev/null 2>&1; then
   if [[ ${SBM_WEB_AUTO_INSTALL_SB:-1} == 1 ]]; then
     install_sb_manager
@@ -190,7 +580,7 @@ ln -sfn "$LIB_DIR/sb-web" "$BIN_DIR/sb-web"
 if [[ ! -e "$ETC_DIR/config.json" ]]; then
   install -m 0600 /dev/stdin "$ETC_DIR/config.json" <<EOF_CONFIG
 {
-  "listen": "127.0.0.1:9091",
+  "listen": "$PANEL_LISTEN",
   "sb_path": "$sb_path",
   "state_file": "/etc/sb-manager/state.json",
   "data_dir": "$VAR_DIR",
@@ -203,12 +593,25 @@ if [[ ! -e "$ETC_DIR/config.json" ]]; then
   "tasks": {"default_timeout": "10m", "batch_concurrency": 1, "failure_stop_percent": 25}
 }
 EOF_CONFIG
-  if [[ -z "$AGENT_CONTROLLER" ]]; then
-    "$BIN_DIR/sb-web" init --config "$ETC_DIR/config.json"
+fi
+if [[ -z "$AGENT_CONTROLLER" ]]; then
+  if initial_credential_output=$("$BIN_DIR/sb-web" init --config "$ETC_DIR/config.json" 2>&1); then
+    :
+  else
+    init_rc=$?
+    printf '%s\n' "$initial_credential_output" >&2
+    exit "$init_rc"
   fi
 fi
+panel_configure_listen
+panel_tls_setup
+[[ -f "$PANEL_ACME_HOME/panel-certificate" ]] && panel_acme_enabled=1
 chown -R "$SERVICE_USER:$SERVICE_USER" "$ETC_DIR" "$VAR_DIR" "$LOG_DIR" 2>/dev/null || true
 chmod 0750 "$ETC_DIR" "$VAR_DIR" "$LOG_DIR"
+if [[ "$panel_acme_enabled" == 1 ]]; then
+  chown -R root:root "$PANEL_ACME_HOME" 2>/dev/null || true
+  chmod 0700 "$PANEL_ACME_HOME"
+fi
 if [[ "$init_system" == systemd ]]; then
   mkdir -p "$SYSTEMD_DIR"
   cleanup_legacy_openrc_services
@@ -280,6 +683,31 @@ ReadWritePaths=$ETC_DIR /etc/sb-manager /etc/sysctl.d $VAR_DIR /var/lib/sb-manag
 [Install]
 WantedBy=multi-user.target
 EOF_AGENT_SYSTEMD
+  if [[ "$panel_acme_enabled" == 1 ]]; then
+    install -m 0644 /dev/stdin "$SYSTEMD_DIR/sb-manager-web-cert-renew.service" <<EOF_CERT_RENEW_SYSTEMD
+[Unit]
+Description=sb-manager WebUI panel certificate renewal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$PANEL_ACME_HOME/acme.sh --home $PANEL_ACME_HOME --config-home $PANEL_ACME_HOME/config --cert-home $PANEL_ACME_HOME/certs --cron
+EOF_CERT_RENEW_SYSTEMD
+    install -m 0644 /dev/stdin "$SYSTEMD_DIR/sb-manager-web-cert-renew.timer" <<EOF_CERT_RENEW_TIMER_SYSTEMD
+[Unit]
+Description=Periodic sb-manager WebUI panel certificate renewal
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=12h
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF_CERT_RENEW_TIMER_SYSTEMD
+  fi
 fi
 if [[ "$init_system" == openrc ]]; then
   mkdir -p "$OPENRC_DIR"
@@ -328,13 +756,22 @@ command_background="yes"
 respawn_delay=5
 depend() { need net; }
 EOF_AGENT_OPENRC
+  if [[ "$panel_acme_enabled" == 1 ]]; then
+    mkdir -p "$PERIODIC_DIR/daily"
+    install -m 0755 /dev/stdin "$PERIODIC_DIR/daily/sb-manager-web-cert-renew" <<EOF_CERT_RENEW_OPENRC
+#!/bin/sh
+exec $PANEL_ACME_HOME/acme.sh --home $PANEL_ACME_HOME --config-home $PANEL_ACME_HOME/config --cert-home $PANEL_ACME_HOME/certs --cron >/dev/null 2>&1
+EOF_CERT_RENEW_OPENRC
+  fi
 fi
 if [[ "$NO_START" == 0 ]]; then
   if [[ -n "$AGENT_CONTROLLER" ]]; then
     "$BIN_DIR/sb-web" join "$AGENT_CONTROLLER" "$AGENT_TOKEN" --config "$ETC_DIR/config.json"
   elif [[ "$init_system" == systemd ]] && command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
-    systemctl enable --now sb-manager-web-helper.service sb-manager-web.service
+    systemd_units=(sb-manager-web-helper.service sb-manager-web.service)
+    [[ "$panel_acme_enabled" == 1 ]] && systemd_units+=(sb-manager-web-cert-renew.timer)
+    systemctl enable --now "${systemd_units[@]}"
   elif [[ "$init_system" == openrc ]] && command -v rc-update >/dev/null 2>&1 && command -v rc-service >/dev/null 2>&1; then
     rc-update add sb-manager-web-helper default || true
     rc-update add sb-manager-web default || true
@@ -346,3 +783,4 @@ if [[ "$NO_START" == 0 ]]; then
 fi
 install_changed=0
 echo "sb-manager-web $VERSION 安装完成。"
+print_install_summary

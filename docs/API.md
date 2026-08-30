@@ -52,6 +52,11 @@ POST /api/v1/subscriptions
 DELETE /api/v1/subscriptions
 ```
 
+These certificate endpoints manage sing-box node certificates. The WebUI
+server's own HTTPS certificate is configured by the SSH installer
+(`install.sh --panel-tls ...`) so certificate private keys are never submitted
+through the browser API.
+
 ## Servers
 
 ```text
