@@ -17,6 +17,7 @@
   let taskFilter = 'all';
   let refreshTimer = null;
   let serverFilter = '';
+  let webUpdateBusy = false;
   async function load() {
     if (loading) return;
     loading = true;
@@ -54,6 +55,27 @@
       const max = Math.max(1, ...values);
       $('metric-trend').innerHTML = `<div class="trend-legend"><span>节点数量</span><strong>${values[values.length - 1]}</strong></div><div class="trend-bars">${values.map((value, index) => `<span title="${escapeHTML(recent[index].recorded_at)}: ${value}" style="height:${Math.max(8, Math.round(value / max * 100))}%"></span>`).join('')}</div>`;
     } catch (error) { $('metric-trend').textContent = error.message; }
+  }
+  async function loadWebUpdate() {
+    const current = $('web-current-version');
+    const status = $('web-update-status');
+    const updateButton = $('web-update-button');
+    try {
+      const info = await json('/api/v1/web/update');
+      current.textContent = info.current || '未知';
+      updateButton.hidden = !(info.can_update && info.update_supported && info.update_available);
+      if (!info.update_supported) {
+        status.textContent = '特权更新服务不可用，请在服务器终端执行 sudo sb-web update。';
+      } else if (info.update_available) {
+        status.textContent = `发现新版本 ${info.latest}，点击“立即更新”后面板会自动重启。`;
+      } else {
+        status.textContent = `当前已是最新版本（${info.current}）。`;
+      }
+    } catch (error) {
+      current.textContent = '未知';
+      updateButton.hidden = true;
+      status.textContent = `检查更新失败：${error.message}`;
+    }
   }
   function renderRealm(realm) {
     const value = realm.realm || realm;
@@ -161,6 +183,26 @@
   $('refresh').addEventListener('click', load);
   $('trend-refresh').addEventListener('click', async () => { try { await json('/api/v1/metrics', { headers: { Accept: 'text/plain' } }); await loadTrend(); } catch (error) { showError(error.message); } });
   $('server-refresh').addEventListener('click', load);
+  $('web-update-check').addEventListener('click', () => loadWebUpdate());
+  $('web-update-button').addEventListener('click', async () => {
+    if (webUpdateBusy || !window.confirm('确认更新 WebUI？服务会短暂重启，配置、数据库和证书会保留。')) return;
+    webUpdateBusy = true;
+    const button = $('web-update-button');
+    const status = $('web-update-status');
+    button.disabled = true;
+    status.textContent = '正在启动更新，面板即将重启…';
+    try {
+      await json('/api/v1/web/update', { method: 'POST', headers: { 'X-CSRF-Token': csrf() }, body: '{}' });
+      status.textContent = '更新已开始。等待服务重启后请刷新页面。';
+      setTimeout(loadWebUpdate, 6000);
+    } catch (error) {
+      status.textContent = `更新启动失败：${error.message}`;
+      showError(error.message);
+    } finally {
+      webUpdateBusy = false;
+      button.disabled = false;
+    }
+  });
   $('realm-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = new FormData(event.target);
@@ -321,5 +363,6 @@
     const stream = new EventSource('/api/v1/events');
     stream.addEventListener('tasks', (event) => { try { const payload = JSON.parse(event.data); allTasks = payload.tasks || []; renderTasks(allTasks); } catch (_) { /* reconnect will retry */ } });
   }
+  loadWebUpdate();
   load();
 })();

@@ -63,6 +63,16 @@ grep -Fq 'User=daemon' "$ROOT/etc/systemd/system/sb-manager-web.service"
 [[ $(stat -c '%a' "$ROOT/usr/local/lib/sb-manager-web/sb-web") == 755 ]]
 runuser -u daemon -- "$ROOT/usr/local/bin/sb-web" version | grep -Fq 'sb-manager-web'
 
+update_output=$(PATH="$ROOT/bin:/usr/bin:/bin" \
+  SBM_WEB_VERSION=0.1.0 \
+  SBM_WEB_INSTALL_URL="file://$PROJECT/install.sh" \
+  SBM_WEB_BINARY_URL="$ROOT/sb-web" \
+  SBM_WEB_SKIP_VERIFY=1 \
+  SBM_WEB_INIT_SYSTEM=systemd \
+  "$ROOT/usr/local/bin/sb-web" update --config "$ROOT/etc/sb-manager-web/config.json")
+grep -Fq '更新完成' <<<"$update_output"
+test -x "$ROOT/usr/local/lib/sb-manager-web/sb-web"
+
 set +e
 PATH="$ROOT/bin:/usr/bin:/bin" \
 SBM_WEB_VERSION=0.1.0 \

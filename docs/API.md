@@ -68,6 +68,19 @@ GET  /api/v1/servers/{server_id}/nodes
 POST /api/v1/servers/{server_id}/actions
 ```
 
+## WebUI updates
+
+```text
+GET  /api/v1/web/update
+POST /api/v1/web/update
+```
+
+The GET endpoint checks the latest GitHub Release and returns the installed
+version, latest version and whether the root helper is available. The POST
+endpoint is admin-only; it starts `sb-web update` through the root helper and
+returns `202 Accepted`. Configuration, the SQLite database, TLS material and
+Agent identity are preserved.
+
 Action request:
 
 ```json

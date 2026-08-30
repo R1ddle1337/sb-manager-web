@@ -34,6 +34,7 @@ type TaskConfig struct {
 }
 
 type Config struct {
+	WebVersion   string      `json:"-"`
 	Listen       string      `json:"listen"`
 	SBPath       string      `json:"sb_path"`
 	StateFile    string      `json:"state_file"`

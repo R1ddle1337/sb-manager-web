@@ -64,13 +64,25 @@ curl -fsSL https://github.com/R1ddle1337/sb-manager-web/raw/main/install.sh | su
 
 如果服务器尚未安装 `sb-manager`，Web 安装器会下载并调用 [`sb-manager`](https://github.com/R1ddle1337/sb-manager) 独立仓库的官方安装器；不会把它的源码、服务定义或业务逻辑复制到 Web 项目。可以用 `SBM_INSTALL_REF`/`SBM_INSTALL_SHA256` 固定上游版本，用 `SBM_WEB_SB_INSTALL_URL` 指定内部镜像，或用 `SBM_WEB_AUTO_INSTALL_SB=0` 要求预先供应依赖。
 
-安装器会校验 Web 发布包 SHA256，并且只为当前实际运行的 systemd 或 OpenRC 生成服务。当前预览版本为 `0.1.0-alpha.25`，开发时可以使用：
+安装器会校验 Web 发布包 SHA256，并且只为当前实际运行的 systemd 或 OpenRC 生成服务。`latest` 指向 GitHub Release，而不是 `main` 分支源码；因此推送源码后需要先创建 Release，安装器才会获取新二进制。当前预览版本为 `0.1.0-alpha.25`，开发时可以使用：
 
 ```bash
 SBM_WEB_BINARY_URL=/path/to/sb-web SBM_WEB_SKIP_VERIFY=1 sudo -E bash install.sh --no-start
 ```
 
 首次在 SSH 中安装时，安装器会显示管理员账号、密码和面板访问地址；重复安装只显示已有账号，并提示使用 `sb-web reset-admin-password` 生成新密码。
+
+### 更新 WebUI
+
+更新只替换 WebUI 二进制，不会重置配置、SQLite 数据库、TLS 证书或 Agent 身份。首次从旧版本升级时仍可直接重新运行安装器；升级到支持更新命令的版本后，日常更新使用：
+
+```bash
+sudo sb-web update
+# 指定版本
+sudo sb-web update --version 0.1.0-alpha.26
+```
+
+控制台首页的“面板更新”区域可以检查最新 Release 并执行更新。更新会短暂重启 WebUI 服务；如果特权 helper 未运行，页面会给出上述 SSH 命令提示。面板更新使用 GitHub Release，不会把 `main` 分支未经发布的源码直接当作生产二进制。
 
 控制端面板不允许关闭 HTTPS。交互安装直接回车会自动探测本机公网 IPv4、申请 IP 证书、监听 `0.0.0.0:9091` 并显示 `https://公网IP:9091`；也可以选择域名证书、自签名证书或已有证书。ACME 联系邮箱默认不设置，避免历史错误邮箱阻断签发；自动化场景仍可通过 `--panel-email` 显式提供。自动申请会先独立注册账户和签发证书，全部成功后才切换面板配置；失败不会破坏原来的监听或 TLS 设置。仍需在云安全组和系统防火墙中放行面板 TCP 端口。非交互首次安装必须明确指定证书模式：
 

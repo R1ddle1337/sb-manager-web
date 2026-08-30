@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/R1ddle1337/sb-manager-web/internal/runner"
@@ -26,8 +28,9 @@ type response struct {
 }
 
 type Server struct {
-	Socket string
-	Runner runner.Runner
+	Socket  string
+	Runner  runner.Runner
+	WebPath string
 }
 
 func (s Server) Serve(ctx context.Context) error {
@@ -79,6 +82,21 @@ func (s Server) handle(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusBadRequest, response{Error: "invalid request"})
 		return
 	}
+	if input.Action == "web.update" {
+		if len(input.Args) != 0 {
+			write(w, http.StatusBadRequest, response{Error: "web.update does not accept arguments"})
+			return
+		}
+		result, runErr := s.update(r.Context())
+		output := response{Result: result}
+		if runErr != nil {
+			output.Error = runErr.Error()
+		} else {
+			s.restartAfterUpdate()
+		}
+		write(w, http.StatusOK, output)
+		return
+	}
 	command, err := runner.ActionCommand(input.Action, input.Args)
 	if err != nil {
 		write(w, http.StatusBadRequest, response{Error: err.Error()})
@@ -90,6 +108,50 @@ func (s Server) handle(w http.ResponseWriter, r *http.Request) {
 		output.Error = runErr.Error()
 	}
 	write(w, http.StatusOK, output)
+}
+
+func (s Server) update(ctx context.Context) (runner.Result, error) {
+	if s.WebPath == "" {
+		return runner.Result{}, errors.New("WebUI 二进制路径为空")
+	}
+	timeout := s.Runner.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	updateCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	command := exec.CommandContext(updateCtx, s.WebPath, "update")
+	command.Env = append(os.Environ(), "SBM_WEB_SKIP_HELPER_RESTART=1")
+	var stdout, stderr strings.Builder
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err := command.Run()
+	result := runner.Result{Stdout: stdout.String(), Stderr: stderr.String()}
+	if updateCtx.Err() == context.DeadlineExceeded {
+		result.TimedOut = true
+		return result, fmt.Errorf("WebUI 更新超时（超过 %s）", timeout)
+	}
+	if err == nil {
+		return result, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		result.ExitCode = exitErr.ExitCode()
+		return result, fmt.Errorf("WebUI 更新退出码 %d", result.ExitCode)
+	}
+	return result, err
+}
+
+func (s Server) restartAfterUpdate() {
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		if _, err := os.Stat("/run/systemd/system"); err == nil {
+			_ = exec.Command("systemctl", "restart", "sb-manager-web-helper.service").Run()
+			return
+		}
+		if _, err := os.Stat("/etc/init.d/sb-manager-web-helper"); err == nil {
+			_ = exec.Command("rc-service", "sb-manager-web-helper", "restart").Run()
+		}
+	}()
 }
 
 func write(w http.ResponseWriter, status int, value any) {

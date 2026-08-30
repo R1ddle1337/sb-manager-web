@@ -31,6 +31,7 @@ PANEL_ACME_SHA256=${SBM_WEB_ACME_SHA256:-9af3ad3d775a5782246df4cdd4b4e7b9b3179de
 panel_listen_override=0
 if [[ -n ${SBM_WEB_LISTEN+x} ]]; then panel_listen_override=1; fi
 NO_START=0
+UPDATE_ONLY=0
 AGENT_CONTROLLER=''
 AGENT_TOKEN=''
 initial_credential_output=''
@@ -41,6 +42,7 @@ panel_acme_bin=''
 usage() {
   cat <<'EOF'
 用法：sudo ./install.sh [--version VERSION] [--no-start]
+      sudo ./install.sh --update-only [--version VERSION]
       sudo ./install.sh --agent CONTROLLER_URL ENROLLMENT_TOKEN
       sudo ./install.sh --panel-tls MODE [--panel-domain DOMAIN] [--panel-email EMAIL]
 
@@ -753,6 +755,7 @@ while (($#)); do
     --panel-cf-zone-id) PANEL_TLS_CF_ZONE_ID=${2:?}; shift 2;;
     --panel-listen) PANEL_LISTEN=${2:?}; panel_listen_override=1; shift 2;;
     --agent) AGENT_CONTROLLER=${2:?}; AGENT_TOKEN=${3:?}; shift 3;;
+    --update-only) UPDATE_ONLY=1; shift;;
     -h|--help) usage; exit 0;;
     *) echo "未知参数：$1" >&2; usage; exit 2;;
   esac
@@ -761,7 +764,7 @@ done
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo '请使用 root/sudo 运行。' >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo '缺少 curl。' >&2; exit 1; }
 panel_validate_listen "$PANEL_LISTEN"
-if ! command -v sb >/dev/null 2>&1; then
+if [[ "$UPDATE_ONLY" == 0 ]] && ! command -v sb >/dev/null 2>&1; then
   if [[ ${SBM_WEB_AUTO_INSTALL_SB:-1} == 1 ]]; then
     install_sb_manager
   else
@@ -770,7 +773,7 @@ if ! command -v sb >/dev/null 2>&1; then
   fi
 fi
 command -v sha256sum >/dev/null 2>&1 || { echo '缺少 sha256sum。' >&2; exit 1; }
-sb_path=$(command -v sb)
+sb_path=$(command -v sb || true)
 init_system=$(detect_init_system)
 
 arch=$(uname -m)
@@ -831,6 +834,9 @@ if [[ "$SERVICE_USER" != root ]] && ! id "$SERVICE_USER" >/dev/null 2>&1; then
 fi
 if [[ -f "$LIB_DIR/sb-web" ]]; then
   cp -p "$LIB_DIR/sb-web" "$previous_binary"
+elif [[ "$UPDATE_ONLY" == 1 ]]; then
+  echo "未找到现有 WebUI 二进制：$LIB_DIR/sb-web；更新已取消。" >&2
+  exit 1
 fi
 install -m 0755 "$tmp/sb-web" "$LIB_DIR/.sb-web.new"
 mv -f "$LIB_DIR/.sb-web.new" "$LIB_DIR/sb-web"
@@ -838,6 +844,31 @@ chown root:root "$LIB_DIR" "$LIB_DIR/sb-web" 2>/dev/null || true
 chmod 0755 "$LIB_DIR" "$LIB_DIR/sb-web"
 install_changed=1
 ln -sfn "$LIB_DIR/sb-web" "$BIN_DIR/sb-web"
+if [[ "$UPDATE_ONLY" == 1 ]]; then
+  if [[ "$NO_START" == 0 ]]; then
+    if [[ "$init_system" == systemd ]] && command -v systemctl >/dev/null 2>&1; then
+      systemctl daemon-reload
+      for unit in sb-manager-web.service sb-manager-web-agent.service sb-manager-web-helper.service; do
+        [[ -f "$SYSTEMD_DIR/$unit" ]] || continue
+        [[ "${SBM_WEB_SKIP_HELPER_RESTART:-0}" == 1 && "$unit" == sb-manager-web-helper.service ]] && continue
+        if systemctl is-active --quiet "$unit"; then
+          systemctl restart "$unit"
+        fi
+      done
+    elif [[ "$init_system" == openrc ]] && command -v rc-service >/dev/null 2>&1; then
+      for service in sb-manager-web sb-manager-web-agent sb-manager-web-helper; do
+        [[ -f "$OPENRC_DIR/$service" ]] || continue
+        [[ "${SBM_WEB_SKIP_HELPER_RESTART:-0}" == 1 && "$service" == sb-manager-web-helper ]] && continue
+        if rc-service "$service" status >/dev/null 2>&1; then
+          rc-service "$service" restart
+        fi
+      done
+    fi
+  fi
+  install_changed=0
+  echo "sb-manager-web $VERSION 更新完成。"
+  exit 0
+fi
 if [[ ! -e "$ETC_DIR/config.json" ]]; then
   install -m 0600 /dev/stdin "$ETC_DIR/config.json" <<EOF_CONFIG
 {

@@ -38,15 +38,17 @@ const (
 )
 
 type Server struct {
-	cfg     config.Config
-	store   *storage.Store
-	auth    *auth.Manager
-	runner  runner.Runner
-	mu      sync.Mutex
-	sem     chan struct{}
-	loginMu sync.Mutex
-	logins  map[string]loginAttempt
-	agentCA *agentCA
+	cfg              config.Config
+	store            *storage.Store
+	auth             *auth.Manager
+	runner           runner.Runner
+	mu               sync.Mutex
+	sem              chan struct{}
+	loginMu          sync.Mutex
+	logins           map[string]loginAttempt
+	agentCA          *agentCA
+	webUpdateMu      sync.Mutex
+	webUpdateRunning bool
 }
 
 type loginAttempt struct {
@@ -123,7 +125,11 @@ func (s *Server) page(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
 	}
-	_ = tmpl.Execute(w, map[string]any{"Version": "0.1.0"})
+	version := s.cfg.WebVersion
+	if version == "" {
+		version = "dev"
+	}
+	_ = tmpl.Execute(w, map[string]any{"Version": version})
 }
 
 func (s *Server) detailPage(w http.ResponseWriter, r *http.Request) {
@@ -361,6 +367,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以添加服务器", nil)
 		return
 	}
+	if r.URL.Path == "/api/v1/web/update" && r.Method == http.MethodPost && s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以更新 WebUI", nil)
+		return
+	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/servers/") && s.auth.Role(session.Username) != "admin" {
 		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以撤销服务器", nil)
 		return
@@ -369,6 +379,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/session":
 		user, _ := s.store.GetUser(session.Username)
 		writeJSON(w, http.StatusOK, map[string]any{"username": session.Username, "role": s.auth.Role(session.Username), "totp_enabled": user.TOTPEnabled, "csrf": session.CSRF})
+	case "/api/v1/web/update":
+		s.webUpdate(w, r, session)
 	case "/api/v1/password":
 		s.changePassword(w, r, session)
 	case "/api/v1/2fa/setup":
@@ -1464,6 +1476,97 @@ func (s *Server) enrollment(w http.ResponseWriter, r *http.Request) {
 		"token":        token,
 		"join_command": fmt.Sprintf("curl -fsSL %s | sudo bash -s -- --agent %s %s", shellQuote(installURL), shellQuote(baseURL), shellQuote(token)),
 	})
+}
+
+const webRepository = "R1ddle1337/sb-manager-web"
+
+type webRelease struct {
+	TagName     string `json:"tag_name"`
+	HTMLURL     string `json:"html_url"`
+	PublishedAt string `json:"published_at"`
+}
+
+func (s *Server) webUpdate(w http.ResponseWriter, r *http.Request, session types.Session) {
+	switch r.Method {
+	case http.MethodGet:
+		release, err := latestWebRelease(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "UPDATE_CHECK_FAILED", err.Error(), nil)
+			return
+		}
+		current := s.cfg.WebVersion
+		if current == "" {
+			current = "dev"
+		}
+		latest := strings.TrimPrefix(release.TagName, "v")
+		_, helperErr := os.Stat(s.cfg.HelperSocket)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"current":          current,
+			"latest":           latest,
+			"update_available": latest != "" && latest != current,
+			"release_url":      release.HTMLURL,
+			"published_at":     release.PublishedAt,
+			"can_update":       s.auth.Role(session.Username) == "admin",
+			"update_supported": s.cfg.HelperSocket != "" && helperErr == nil,
+		})
+	case http.MethodPost:
+		if s.cfg.HelperSocket == "" {
+			writeError(w, http.StatusServiceUnavailable, "UPDATE_UNAVAILABLE", "未配置 WebUI 特权更新服务，请使用 sudo sb-web update", nil)
+			return
+		}
+		if _, err := os.Stat(s.cfg.HelperSocket); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "UPDATE_UNAVAILABLE", "WebUI 特权更新服务未运行，请使用 sudo sb-web update 或启动 helper 服务", nil)
+			return
+		}
+		s.webUpdateMu.Lock()
+		if s.webUpdateRunning {
+			s.webUpdateMu.Unlock()
+			writeError(w, http.StatusConflict, "UPDATE_IN_PROGRESS", "WebUI 更新正在进行中", nil)
+			return
+		}
+		s.webUpdateRunning = true
+		s.webUpdateMu.Unlock()
+		s.recordAudit(session.Username, "web.update", []string{types.ServerLocal}, nil, "accepted")
+		go func() {
+			_, err := s.runLocal("web.update", nil)
+			s.webUpdateMu.Lock()
+			s.webUpdateRunning = false
+			s.webUpdateMu.Unlock()
+			if err != nil {
+				s.recordAudit(session.Username, "web.update", []string{types.ServerLocal}, nil, "failed")
+			}
+		}()
+		writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "message": "WebUI 更新已开始，服务完成重启后请刷新页面。"})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET、POST", nil)
+	}
+}
+
+func latestWebRelease(parent context.Context) (webRelease, error) {
+	ctx, cancel := context.WithTimeout(parent, 8*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/"+webRepository+"/releases/latest", nil)
+	if err != nil {
+		return webRelease{}, err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "sb-manager-web")
+	response, err := (&http.Client{Timeout: 9 * time.Second}).Do(request)
+	if err != nil {
+		return webRelease{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return webRelease{}, fmt.Errorf("GitHub 返回 HTTP %d", response.StatusCode)
+	}
+	var release webRelease
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&release); err != nil {
+		return webRelease{}, fmt.Errorf("解析 GitHub Release 失败：%w", err)
+	}
+	if release.TagName == "" {
+		return webRelease{}, errors.New("GitHub 没有可用的 Release")
+	}
+	return release, nil
 }
 
 func shellQuote(value string) string {

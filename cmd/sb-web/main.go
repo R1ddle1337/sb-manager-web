@@ -28,6 +28,7 @@ import (
 )
 
 const defaultConfigPath = "/etc/sb-manager-web/config.json"
+const defaultInstallerURL = "https://github.com/R1ddle1337/sb-manager-web/raw/main/install.sh"
 
 const (
 	webLibDir       = "/usr/local/lib/sb-manager-web"
@@ -76,6 +77,8 @@ func run(args []string) error {
 		return runHelper(args[1:])
 	case "join":
 		return join(args[1:])
+	case "update":
+		return update(args[1:])
 	case "status":
 		return status(args[1:])
 	case "reset-admin-password":
@@ -111,6 +114,7 @@ func serve(args []string) error {
 	if *listen != "" {
 		cfg.Listen = *listen
 	}
+	cfg.WebVersion = version
 	if err := os.MkdirAll(cfg.DataDir, 0750); err != nil {
 		return err
 	}
@@ -207,6 +211,86 @@ func serviceAction(action string) error {
 	return serviceActionFor(action, "sb-manager-web.service", "sb-manager-web")
 }
 
+func update(args []string) error {
+	if os.Geteuid() != 0 {
+		return errors.New("更新 Web 面板需要 root，请使用 sudo sb-web update")
+	}
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	configPath := fs.String("config", defaultConfigPath, "配置文件")
+	targetVersion := fs.String("version", "", "目标版本（默认使用最新 Release）")
+	installerURL := fs.String("installer-url", os.Getenv("SBM_WEB_INSTALL_URL"), "安装器地址")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *installerURL == "" {
+		*installerURL = defaultInstallerURL
+	}
+	if !strings.HasPrefix(*installerURL, "https://") && !strings.HasPrefix(*installerURL, "file://") {
+		return errors.New("安装器地址必须使用 HTTPS")
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return fmt.Errorf("读取配置失败：%w", err)
+	}
+	if _, err := os.Stat(*configPath); err != nil {
+		return errors.New("未找到 WebUI 配置，无法执行更新")
+	}
+	tmp, err := os.CreateTemp("", "sb-web-update-*.sh")
+	if err != nil {
+		return err
+	}
+	scriptPath := tmp.Name()
+	defer os.Remove(scriptPath)
+	_ = tmp.Chmod(0700)
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	downloadArgs := []string{"--fail", "--silent", "--show-error", "--location", "--retry", "3", "--retry-delay", "2", "--connect-timeout", "15"}
+	if strings.HasPrefix(*installerURL, "https://") {
+		downloadArgs = append(downloadArgs, "--proto", "=https", "--tlsv1.2")
+	}
+	downloadArgs = append(downloadArgs, *installerURL, "-o", scriptPath)
+	downloader := exec.Command("curl", downloadArgs...)
+	downloader.Stdout, downloader.Stderr, downloader.Stdin = os.Stdout, os.Stderr, os.Stdin
+	if err := downloader.Run(); err != nil {
+		return fmt.Errorf("下载更新安装器失败：%w", err)
+	}
+	if err := os.Chmod(scriptPath, 0700); err != nil {
+		return err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("定位当前 WebUI 二进制失败：%w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+		executable = resolved
+	}
+	libDir := filepath.Dir(executable)
+	binDir := webBinDir
+	if invoked, absErr := filepath.Abs(os.Args[0]); absErr == nil && filepath.Base(invoked) == "sb-web" {
+		if info, statErr := os.Lstat(invoked); statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			binDir = filepath.Dir(invoked)
+		}
+	}
+	env := append([]string{}, os.Environ()...)
+	env = append(env,
+		"SBM_WEB_LIB="+libDir,
+		"SBM_WEB_BIN="+binDir,
+		"SBM_WEB_ETC="+filepath.Dir(*configPath),
+		"SBM_WEB_VAR="+cfg.DataDir,
+		"SBM_WEB_LOG="+cfg.LogDir,
+	)
+	cmdArgs := []string{scriptPath, "--update-only"}
+	if *targetVersion != "" {
+		cmdArgs = append(cmdArgs, "--version", *targetVersion)
+	}
+	cmd := exec.Command("bash", cmdArgs...)
+	cmd.Env = env
+	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
+	return cmd.Run()
+}
+
 func serviceActionFor(action, systemdUnit, openRCService string) error {
 	if _, err := os.Stat("/run/systemd/system"); err == nil {
 		cmd := "systemctl"
@@ -247,10 +331,11 @@ func menu() error {
 		fmt.Println("  5. 查看面板日志")
 		fmt.Println("  6. 重置管理员密码")
 		fmt.Println("  7. 查看面板 TLS/证书配置")
-		fmt.Println("  8. 卸载 Web 面板")
+		fmt.Println("  8. 更新 Web 面板")
+		fmt.Println("  9. 卸载 Web 面板")
 		fmt.Println("  0. 退出")
 		fmt.Println("╰───────────────────────────────────────────────╯")
-		fmt.Print("请选择 [0-8]: ")
+		fmt.Print("请选择 [0-9]: ")
 		line, err := reader.ReadString('\n')
 		if errors.Is(err, io.EOF) && strings.TrimSpace(line) == "" {
 			return nil
@@ -290,6 +375,10 @@ func menu() error {
 				fmt.Fprintf(os.Stderr, "TLS 配置读取失败：%v\n", err)
 			}
 		case "8":
+			if err := update(nil); err != nil {
+				fmt.Fprintf(os.Stderr, "更新失败：%v\n", err)
+			}
+		case "9":
 			if err := uninstallMenu(reader); err != nil {
 				fmt.Fprintf(os.Stderr, "卸载失败：%v\n", err)
 			}
@@ -297,7 +386,7 @@ func menu() error {
 				return nil
 			}
 		default:
-			fmt.Fprintln(os.Stderr, "选择无效，请输入 0-8。")
+			fmt.Fprintln(os.Stderr, "选择无效，请输入 0-9。")
 		}
 	}
 }
@@ -521,7 +610,11 @@ func runHelper(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	return helper.Server{Socket: cfg.HelperSocket, Runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}}.Serve(ctx)
+	webPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("定位 WebUI 二进制失败：%w", err)
+	}
+	return helper.Server{Socket: cfg.HelperSocket, Runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}, WebPath: webPath}.Serve(ctx)
 }
 
 func join(args []string) error {
@@ -650,6 +743,7 @@ func usage() {
   sb-web disable|restart|logs           服务管理
   sb-web agent [--config PATH]
   sb-web join CONTROLLER_URL TOKEN
+  sb-web update [--version VERSION]
   sb-web status [--listen HOST:PORT]
   sb-web init [--config PATH]           初始化配置和管理员账号
   sb-web reset-admin-password [USERNAME] [PASSWORD]
