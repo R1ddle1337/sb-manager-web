@@ -164,6 +164,9 @@ cat >"$ROOT/acme.sh" <<'EOF_ACME'
 set -Eeuo pipefail
 args=("$@")
 for ((i=0; i<${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == --accountemail && -n ${SBM_TEST_ACME_EMAIL_CAPTURE:-} ]]; then
+    printf '%s\n' "${args[$((i+1))]}" >"$SBM_TEST_ACME_EMAIL_CAPTURE"
+  fi
   if [[ "${args[$i]}" == --install-cert ]]; then
     cert=''; key=''; reload=''
     for ((j=i+1; j<${#args[@]}; j++)); do
@@ -189,9 +192,10 @@ SBM_WEB_BINARY_URL="$ROOT/sb-web" \
 SBM_WEB_SKIP_VERIFY=1 \
 SBM_WEB_TLS_MODE=acme-auto \
 SBM_WEB_TLS_DOMAIN=IP \
-SBM_WEB_TLS_EMAIL=admin@example.com \
+SBM_WEB_TLS_EMAIL=$' admin@example.com\r ' \
 SBM_WEB_PUBLIC_IPV4=127.0.0.1 \
 SBM_WEB_ACME_HOME="$ROOT/acme-home" \
+SBM_TEST_ACME_EMAIL_CAPTURE="$ROOT/acme-email.txt" \
 SBM_TEST_CERT_SOURCE="$ROOT/etc/sb-manager-web/tls/fullchain.pem" \
 SBM_TEST_KEY_SOURCE="$ROOT/etc/sb-manager-web/tls/key.pem" \
 SBM_WEB_PREFIX="$ROOT/usr/local" \
@@ -211,6 +215,8 @@ jq -e '.listen == "0.0.0.0:9091"' "$ROOT/etc/sb-manager-web/config.json" >/dev/n
 test -x "$ROOT/usr/local/lib/sb-manager-web/reload-panel-certificate"
 grep -Fq '面板访问地址：https://127.0.0.1:9091' "$ROOT/acme-install.out"
 grep -Fq '请确认云安全组和系统防火墙已放行 TCP 9091' "$ROOT/acme-install.out"
+[[ $(cat "$ROOT/acme-email.txt") == admin@example.com ]]
+grep -Fq '使用 ACME 账户邮箱：admin@example.com' "$ROOT/acme-install.out"
 
 PATH="$ROOT/bin:/usr/bin:/bin" \
 SBM_WEB_VERSION=0.1.0 \

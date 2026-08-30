@@ -247,6 +247,20 @@ panel_saved_acme_email() {
   )
 }
 
+panel_normalize_email() {
+  local email=$1 local_part domain
+  email=${email//$'\r'/}
+  email=${email//$'\n'/}
+  email=${email//$'\t'/}
+  email=${email// /}
+  email=${email//$'\u00a0'/}
+  email=${email//$'\u200b'/}
+  local_part=${email%@*}
+  domain=${email##*@}
+  [[ "$local_part" != "$email" ]] || { printf '%s\n' "$email"; return 0; }
+  printf '%s@%s\n' "$local_part" "${domain,,}"
+}
+
 panel_default_identifier() {
   local address=''
   address=$(panel_public_ipv4 || true)
@@ -385,10 +399,12 @@ panel_collect_tls_inputs() {
         panel_has_tty || { echo 'ACME 流程需要 --panel-email 或 SBM_WEB_TLS_EMAIL。' >&2; return 1; }
         PANEL_TLS_EMAIL=$(panel_read_tty 'ACME 账户邮箱：')
       fi
+      PANEL_TLS_EMAIL=$(panel_normalize_email "$PANEL_TLS_EMAIL")
       [[ "$PANEL_TLS_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || {
         echo 'ACME 账户邮箱格式无效。' >&2
         return 1
       }
+      printf '使用 ACME 账户邮箱：%s\n' "$PANEL_TLS_EMAIL"
       if [[ "$PANEL_TLS_MODE" == acme-dns-cloudflare && -z "$PANEL_TLS_CF_TOKEN" ]]; then
         panel_has_tty || { echo 'Cloudflare DNS-01 需要 --panel-cf-token 或 SBM_WEB_TLS_CF_TOKEN。' >&2; return 1; }
         PANEL_TLS_CF_TOKEN=$(panel_read_tty 'Cloudflare API Token（输入不会回显）：' 1)
