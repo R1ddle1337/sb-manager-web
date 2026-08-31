@@ -8,8 +8,13 @@
     return data;
   };
   const text = (value) => value == null ? '-' : String(value);
-  const showError = (message, success = false) => { $('alerts').innerHTML = `<div class="notice ${success ? 'success' : 'error'}">${escapeHTML(message)}</div>`; };
+  let alertTimer = null;
+  const showError = (message, success = false) => { $('alerts').innerHTML = `<div class="notice ${success ? 'success' : 'error'}">${escapeHTML(message)}</div>`; if (alertTimer) clearTimeout(alertTimer); alertTimer = setTimeout(() => { $('alerts').innerHTML = ''; }, success ? 4500 : 8000); };
   const escapeHTML = (value) => text(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const formatTime = (value) => { if (!value) return '-'; const date = new Date(value); return Number.isNaN(date.getTime()) ? text(value) : date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); };
+  const actionNames = { 'health.check': '健康检查', 'backup.create': '创建备份', 'bbr.enable': '开启 BBR', 'bbr.disable': '关闭 BBR', 'hy2-buffer.enable': '优化 HY2 UDP', 'hy2-buffer.disable': '关闭 HY2 优化', 'core.update': '更新核心', 'core.rollback': '回滚核心', 'agent.update': '更新 Agent', 'node.add': '添加节点', 'node.set': '修改节点', 'node.enable': '启用节点', 'node.disable': '停用节点', 'node.delete': '删除节点', 'user.add': '添加节点用户', 'service.restart': '重启服务', 'doctor.repair-safe': '安全修复', 'realm.enable': '启用 Realm', 'realm.disable': '停用 Realm' };
+  const taskStates = { pending: ['等待中', 'pending'], running: ['执行中', 'running'], success: ['成功', 'success'], failed: ['失败', 'failed'], canceled: ['已取消', 'canceled'] };
+  const skipReasons = { offline: '离线', 'server not found': '服务器不存在', 'already current': '已是目标版本', 'local controller is updated separately': '本机控制端单独更新', 'self-update unsupported; run sudo sb-web update once': '需先手动升级一次' };
   const setState = (id, value, good) => { const el = $(id); el.textContent = value; el.className = good ? 'ok' : 'bad'; };
   let loading = false;
   let allTasks = [];
@@ -20,21 +25,46 @@
   let webUpdateBusy = false;
   let latestAgentVersion = '';
   let canManageAgentUpdates = false;
+  let currentSession = null;
+  async function loadSession() {
+    try {
+      currentSession = await json('/api/v1/session');
+      $('current-user').textContent = currentSession.username || '用户';
+      $('current-role').textContent = currentSession.role || 'viewer';
+      $('user-avatar').textContent = String(currentSession.username || 'S').slice(0, 1).toUpperCase();
+      document.querySelectorAll('[data-open-server]').forEach((button) => { button.hidden = currentSession.role !== 'admin'; });
+      document.querySelectorAll('[data-open-node], [data-action]').forEach((button) => { button.disabled = currentSession.role === 'viewer'; });
+      if (currentSession.role === 'viewer') {
+        document.querySelectorAll('#batch-form input, #batch-form select, #batch-form button, #add-user-form input, #add-user-form button, #realm-form input, #realm-form button, #cert-form input, #cert-form button').forEach((field) => { field.disabled = true; });
+      }
+    } catch (_) {
+      $('current-user').textContent = '当前用户';
+      $('current-role').textContent = '-';
+    }
+  }
   async function load() {
     if (loading) return;
     loading = true;
-    $('alerts').innerHTML = '';
     try {
-      const [status, nodes, bbr, hy2, capabilities, tasks, servers, realm] = await Promise.all([
+      const results = await Promise.allSettled([
         json('/api/v1/status'), json('/api/v1/nodes'), json('/api/v1/bbr/status'), json('/api/v1/hy2-buffer/status'), json('/api/v1/capabilities'), json('/api/v1/tasks'), json('/api/v1/servers'), json('/api/v1/realm')
       ]);
+      const value = (index, fallback) => results[index].status === 'fulfilled' ? results[index].value : fallback;
+      const status = value(0, {});
+      const nodes = value(1, { nodes: [] });
+      const bbr = value(2, {});
+      const hy2 = value(3, {});
+      const capabilities = value(4, {});
+      const tasks = value(5, { tasks: [] });
+      const servers = value(6, { servers: [] });
+      const realm = value(7, {});
       const services = status.services || status.service || {};
       const serviceOK = services.sing_box?.active ?? services.singbox?.active ?? false;
-      setState('service-state', serviceOK ? '运行中' : '待命/停止', serviceOK);
+      setState('service-state', results[0].status === 'rejected' ? '读取失败' : (serviceOK ? '运行中' : '待命/停止'), serviceOK);
       const list = nodes.nodes || nodes;
-      $('node-count').textContent = Array.isArray(list) ? `${list.length} 个` : '-';
-      setState('bbr-state', bbr.enabled ? '已启用' : '未启用', bbr.enabled);
-      setState('hy2-state', hy2.enabled ? '已生效' : '未生效', hy2.enabled);
+      $('node-count').textContent = results[1].status === 'rejected' ? '读取失败' : (Array.isArray(list) ? `${list.length} 个` : '-');
+      setState('bbr-state', results[2].status === 'rejected' ? '读取失败' : (bbr.enabled ? '已启用' : '未启用'), bbr.enabled === true);
+      setState('hy2-state', results[3].status === 'rejected' ? '读取失败' : (hy2.enabled ? '已生效' : '未生效'), hy2.enabled === true);
       $('core-version').textContent = `核心：${capabilities.version || '未知'}`;
       $('status-output').textContent = JSON.stringify(status, null, 2);
       renderRealm(realm);
@@ -44,6 +74,8 @@
       renderTasks(allTasks);
       lastServers = servers.servers || [];
       renderServers(lastServers);
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length) showError(`部分状态读取失败（${failures.length} 项），其余功能仍可继续使用。`);
       loadTrend();
     } catch (error) { showError(error.message); } finally { loading = false; }
   }
@@ -92,11 +124,12 @@
     const enabled = value && value.enabled === true;
     setState('realm-state', enabled ? '已启用' : '未启用', enabled);
     $('realm-output').textContent = JSON.stringify(value || {}, null, 2);
-    $('realm-disable').disabled = !enabled;
+    $('realm-disable').disabled = !enabled || currentSession?.role === 'viewer';
   }
   function renderNodes(nodes) {
     if (!Array.isArray(nodes) || !nodes.length) { $('nodes-list').textContent = '暂无节点'; return; }
-    $('nodes-list').innerHTML = `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th><th>操作</th></tr></thead><tbody>${nodes.map((node) => `<tr><td><a href="/servers/local/nodes/${encodeURIComponent(node.id)}"><code>${escapeHTML(node.id)}</code></a></td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="ok">启用</span>' : '<span class="bad">停用</span>'}</td><td><button class="secondary node-action" data-node-id="${escapeHTML(node.id)}" data-node-action="${node.enabled ? 'disable' : 'enable'}">${node.enabled ? '停用' : '启用'}</button> <button class="secondary share-action" data-node-id="${escapeHTML(node.id)}" data-qr="0">分享</button> <button class="secondary share-action" data-node-id="${escapeHTML(node.id)}" data-qr="1">QR</button> <button class="secondary delete-action" data-node-id="${escapeHTML(node.id)}">删除</button></td></tr>`).join('')}</tbody></table>`;
+    const readOnly = currentSession?.role === 'viewer';
+    $('nodes-list').innerHTML = `<table><thead><tr><th>ID</th><th>协议</th><th>端口</th><th>状态</th><th>操作</th></tr></thead><tbody>${nodes.map((node) => `<tr><td><a href="/servers/local/nodes/${encodeURIComponent(node.id)}"><code>${escapeHTML(node.id)}</code></a></td><td>${escapeHTML(node.protocol)}</td><td>${escapeHTML(node.port)}</td><td>${node.enabled ? '<span class="status-badge success">启用</span>' : '<span class="status-badge canceled">停用</span>'}</td><td><button class="secondary node-action" data-node-id="${escapeHTML(node.id)}" data-node-action="${node.enabled ? 'disable' : 'enable'}" ${readOnly ? 'disabled' : ''}>${node.enabled ? '停用' : '启用'}</button> <button class="secondary share-action" data-node-id="${escapeHTML(node.id)}" data-qr="0">分享</button> <button class="secondary share-action" data-node-id="${escapeHTML(node.id)}" data-qr="1">QR</button> <button class="secondary delete-action" data-node-id="${escapeHTML(node.id)}" ${readOnly ? 'disabled' : ''}>删除</button></td></tr>`).join('')}</tbody></table>`;
     document.querySelectorAll('.node-action').forEach((button) => button.addEventListener('click', () => nodeAction(button)));
     document.querySelectorAll('.share-action').forEach((button) => button.addEventListener('click', () => showShare(button.dataset.nodeId, button.dataset.qr === '1')));
     document.querySelectorAll('.delete-action').forEach((button) => button.addEventListener('click', () => { if (window.confirm(`确认删除节点 ${button.dataset.nodeId}？`)) nodeActionWith(button, 'delete'); }));
@@ -107,7 +140,7 @@
     const failed = tasks.filter((task) => task.status === 'failed').length;
     $('batch-progress').textContent = tasks.length ? `最近 ${tasks.length} 项 · 已完成 ${completed} · 失败 ${failed}` : '';
     if (!filtered.length) { $('tasks-list').textContent = '暂无匹配任务'; return; }
-    $('tasks-list').innerHTML = `<table><thead><tr><th>时间</th><th>服务器</th><th>操作</th><th>状态</th><th>尝试</th><th>错误</th><th>操作</th></tr></thead><tbody>${filtered.slice(-20).reverse().map((task) => `<tr><td>${escapeHTML(task.created_at)}</td><td>${escapeHTML(task.server_id)}</td><td><code>${escapeHTML(task.action)}</code></td><td>${escapeHTML(task.status)}</td><td>${escapeHTML(task.attempt || 0)}</td><td>${escapeHTML(task.error || '')}</td><td><button class="task-detail" data-task-id="${escapeHTML(task.id)}">详情</button>${task.status === 'pending' || task.status === 'running' ? ` <button class="task-action" data-task-id="${escapeHTML(task.id)}" data-task-operation="cancel">取消</button>` : ''}${task.status === 'failed' || task.status === 'canceled' ? ` <button class="task-action" data-task-id="${escapeHTML(task.id)}" data-task-operation="retry">重试</button>` : ''}</td></tr>`).join('')}</tbody></table>`;
+    $('tasks-list').innerHTML = `<table><thead><tr><th>创建时间</th><th>目标</th><th>动作</th><th>状态</th><th>次数</th><th>结果摘要</th><th>操作</th></tr></thead><tbody>${filtered.slice(-20).reverse().map((task) => { const state = taskStates[task.status] || [task.status, '']; const summary = task.error || (task.status === 'success' ? '执行完成' : ''); const canManage = currentSession?.role !== 'viewer' && (task.action !== 'agent.update' || currentSession?.role === 'admin'); return `<tr><td>${escapeHTML(formatTime(task.created_at))}</td><td><code>${escapeHTML(task.server_id)}</code></td><td>${escapeHTML(actionNames[task.action] || task.action)}</td><td><span class="status-badge ${state[1]}">${escapeHTML(state[0])}</span></td><td>第 ${Number(task.attempt || 0) + 1} 次</td><td class="result-summary" title="${escapeHTML(summary)}">${escapeHTML(summary)}</td><td><button class="task-detail" data-task-id="${escapeHTML(task.id)}">详情</button>${canManage && (task.status === 'pending' || task.status === 'running') ? ` <button class="task-action" data-task-id="${escapeHTML(task.id)}" data-task-operation="cancel">取消</button>` : ''}${canManage && (task.status === 'failed' || task.status === 'canceled') ? ` <button class="task-action" data-task-id="${escapeHTML(task.id)}" data-task-operation="retry">重试</button>` : ''}</td></tr>`; }).join('')}</tbody></table>`;
     document.querySelectorAll('.task-action').forEach((button) => button.addEventListener('click', () => taskAction(button)));
     document.querySelectorAll('.task-detail').forEach((button) => button.addEventListener('click', () => showTaskDetail(button.dataset.taskId)));
   }
@@ -125,9 +158,16 @@
       if (remote && supportsUpdate && latestAgentVersion && !outdated) updateControl = '<span class="ok">已是最新</span>';
       if (remote && supportsUpdate && outdated && canManageAgentUpdates) updateControl = `<button class="agent-update" data-server-id="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}>更新至 ${escapeHTML(latestAgentVersion)}</button>`;
       if (remote && supportsUpdate && outdated && !canManageAgentUpdates) updateControl = '<span class="muted">有新版本</span>';
-      return `<tr><td><input class="server-select" type="checkbox" value="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}></td><td><a href="/servers/${encodeURIComponent(server.id)}"><strong>${escapeHTML(server.name)}</strong></a></td><td>${escapeHTML(server.address || server.id)}</td><td>${escapeHTML(server.region)}</td><td>${server.online ? '<span class="ok">在线</span>' : '<span class="bad">离线</span>'}</td><td>${escapeHTML(server.core_version)}</td><td>${escapeHTML(server.agent_version || (remote ? '未知' : '-'))}</td><td>${escapeHTML(server.last_seen)}</td><td>${updateControl}</td></tr>`;
+      const selectionDisabled = !server.online || currentSession?.role === 'viewer';
+      return `<tr><td><input class="server-select" type="checkbox" value="${escapeHTML(server.id)}" ${selectionDisabled ? 'disabled' : ''}></td><td><a href="/servers/${encodeURIComponent(server.id)}"><strong>${escapeHTML(server.name)}</strong></a></td><td>${escapeHTML(server.address || server.id)}</td><td>${escapeHTML(server.region)}</td><td>${server.online ? '<span class="status-badge success">在线</span>' : '<span class="status-badge failed">离线</span>'}</td><td>${escapeHTML(server.core_version)}</td><td>${escapeHTML(server.agent_version || (remote ? '未知' : '-'))}</td><td>${escapeHTML(formatTime(server.last_seen))}</td><td>${updateControl}</td></tr>`;
     }).join('')}</tbody></table>`;
     document.querySelectorAll('.agent-update').forEach((button) => button.addEventListener('click', () => updateAgent(button)));
+    document.querySelectorAll('.server-select').forEach((checkbox) => checkbox.addEventListener('change', updateSelectionCount));
+    updateSelectionCount();
+  }
+  function updateSelectionCount() {
+    const selected = document.querySelectorAll('.server-select:checked').length;
+    $('server-selection-count').textContent = selected ? `已选择 ${selected} 台服务器` : '尚未选择服务器';
   }
   async function updateAgent(button) {
     const serverID = button.dataset.serverId;
@@ -208,11 +248,16 @@
       await json('/api/v1/servers/local/nodes', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify(payload) });
       event.target.reset();
       syncProtocolFields();
+      if ($('node-dialog').open) $('node-dialog').close();
+      activateWorkspace('nodes');
       showError('节点添加任务已创建。', true);
       setTimeout(load, 900);
     } catch (error) { showError(error.message); }
   });
-  document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => action(button.dataset.action, button)));
+  document.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => {
+    if (button.dataset.confirm && !window.confirm(button.dataset.confirm)) return;
+    action(button.dataset.action, button);
+  }));
   $('refresh').addEventListener('click', load);
   $('trend-refresh').addEventListener('click', async () => { try { await json('/api/v1/metrics', { headers: { Accept: 'text/plain' } }); await loadTrend(); } catch (error) { showError(error.message); } });
   $('server-refresh').addEventListener('click', load);
@@ -279,7 +324,7 @@
       showError(error.message);
     }
   };
-  $('add-server').addEventListener('click', createEnrollment);
+  document.querySelectorAll('[data-open-server]').forEach((button) => button.addEventListener('click', createEnrollment));
   $('server-dialog-close').addEventListener('click', () => {
     if (typeof serverDialog.close === 'function') serverDialog.close();
     else serverDialog.removeAttribute('open');
@@ -294,6 +339,14 @@
       showError('浏览器不允许自动复制，请手动选择命令。');
     }
   });
+  const nodeDialog = $('node-dialog');
+  const closeNodeDialog = () => { if (nodeDialog.open) nodeDialog.close(); };
+  document.querySelectorAll('[data-open-node]').forEach((button) => button.addEventListener('click', () => {
+    if (typeof nodeDialog.showModal === 'function') nodeDialog.showModal();
+    else nodeDialog.setAttribute('open', '');
+  }));
+  $('node-dialog-close').addEventListener('click', closeNodeDialog);
+  $('node-dialog-cancel').addEventListener('click', closeNodeDialog);
   $('batch-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const selected = [...document.querySelectorAll('.server-select:checked')].map((item) => item.value);
@@ -307,7 +360,7 @@
       const preview = await json('/api/v1/batch/preflight', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ server_ids: selected, action: actionName, args }) });
       const eligible = preview.eligible || [];
       const skipped = preview.skipped || [];
-      const skippedText = skipped.length ? `，跳过 ${skipped.length} 台（${skipped.map((item) => item.id + ': ' + item.reason).join('；')}）` : '';
+      const skippedText = skipped.length ? `，跳过 ${skipped.length} 台（${skipped.map((item) => item.id + ': ' + (skipReasons[item.reason] || item.reason)).join('；')}）` : '';
       if (!eligible.length || !window.confirm(`预检查：${eligible.length} 台可执行${skippedText}。确认继续？`)) return;
       const result = await json('/api/v1/batch/actions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ server_ids: selected, action: actionName, args, strategy, percentage }) });
       showError(`批量任务 ${result.batch_id} 已创建，共 ${result.tasks.length} 项。`, true);
@@ -341,27 +394,11 @@
     } catch (error) { showError(error.message); }
   });
   const protocolSelect = document.querySelector('#add-node-form select[name="protocol"]');
-  const serverSearch = document.createElement('input');
-  serverSearch.type = 'search';
-  serverSearch.placeholder = '搜索名称 / 地址 / 地区';
-  serverSearch.className = 'server-search';
-  $('servers').querySelector('.panel-header').appendChild(serverSearch);
+  const serverSearch = $('server-search');
   serverSearch.addEventListener('input', () => { serverFilter = serverSearch.value.trim(); renderServers(lastServers); });
-  const strategySelect = document.createElement('select');
-  strategySelect.id = 'batch-strategy';
-  strategySelect.setAttribute('aria-label', '发布策略');
-  strategySelect.innerHTML = '<option value="all">全部服务器</option><option value="canary">灰度：先执行 1 台</option><option value="percentage">灰度：按百分比</option>';
-  const percentageInput = document.createElement('input');
-  percentageInput.id = 'batch-percentage';
-  percentageInput.type = 'number';
-  percentageInput.min = '1';
-  percentageInput.max = '100';
-  percentageInput.value = '25';
-  percentageInput.title = '灰度百分比';
-  percentageInput.hidden = true;
-  $('batch-form').insertBefore(strategySelect, $('batch-form').firstChild);
-  $('batch-form').insertBefore(percentageInput, $('batch-form').lastElementChild);
-  strategySelect.addEventListener('change', () => { percentageInput.hidden = strategySelect.value !== 'percentage'; });
+  const strategySelect = $('batch-strategy');
+  const percentageField = $('batch-percentage-field');
+  strategySelect.addEventListener('change', () => { percentageField.hidden = strategySelect.value !== 'percentage'; });
   const syncProtocolFields = () => {
     const protocol = protocolSelect.value;
     document.querySelectorAll('[data-protocols]').forEach((field) => {
@@ -371,10 +408,6 @@
   };
   protocolSelect.addEventListener('change', syncProtocolFields);
   syncProtocolFields();
-  const taskTools = document.createElement('div');
-  taskTools.className = 'task-tools';
-  taskTools.innerHTML = '<select id="task-filter" aria-label="任务状态筛选"><option value="all">全部状态</option><option value="pending">等待中</option><option value="running">执行中</option><option value="success">成功</option><option value="failed">失败</option><option value="canceled">已取消</option></select><span id="batch-progress" class="muted"></span>';
-  $('tasks').querySelector('.panel-header').appendChild(taskTools);
   $('task-filter').addEventListener('change', (event) => { taskFilter = event.target.value; renderTasks(allTasks); });
   const drawer = document.createElement('aside');
   drawer.id = 'task-drawer';
@@ -383,21 +416,30 @@
   drawer.innerHTML = '<div class="drawer-header"><strong id="task-drawer-title">任务详情</strong><button id="task-drawer-close" class="icon-button" aria-label="关闭详情">×</button></div><pre id="task-drawer-body" class="output"></pre>';
   document.body.appendChild(drawer);
   $('task-drawer-close').addEventListener('click', () => { drawer.hidden = true; });
-  const topbarTools = document.createElement('div');
-  topbarTools.className = 'topbar-tools';
-  topbarTools.innerHTML = '<select id="refresh-interval" title="自动刷新间隔"><option value="0">手动刷新</option><option value="30">30 秒</option><option value="60">60 秒</option></select>';
-  $('refresh').parentElement.insertBefore(topbarTools, $('refresh'));
-  document.documentElement.dataset.theme = 'light';
   $('refresh-interval').addEventListener('change', (event) => { if (refreshTimer) clearInterval(refreshTimer); const seconds = Number(event.target.value); if (seconds > 0) refreshTimer = setInterval(load, seconds * 1000); });
-  const navTitles = { overview: '总览', servers: '服务器', nodes: '节点与用户', 'quick-actions': '快捷操作', realm: 'Hysteria Realm', certificates: '节点证书', tasks: '任务与审计' };
+  const navTitles = { overview: '总览', servers: '服务器', nodes: '节点与用户', tasks: '任务记录', system: '系统维护' };
   const closeSidebar = () => { $('sidebar').classList.remove('open'); $('scrim').hidden = true; $('menu-toggle').setAttribute('aria-expanded', 'false'); };
+  function activateWorkspace(name, updateHash = true) {
+    if (!navTitles[name]) name = 'overview';
+    document.querySelectorAll('[data-workspace-panel]').forEach((panel) => { panel.hidden = panel.dataset.workspacePanel !== name; });
+    document.querySelectorAll('[data-nav]').forEach((nav) => nav.classList.toggle('active', nav.dataset.nav === name));
+    $('page-title').textContent = navTitles[name];
+    if (updateHash) history.replaceState(null, '', `#${name}`);
+    closeSidebar();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
   $('menu-toggle').addEventListener('click', () => { const open = !$('sidebar').classList.contains('open'); $('sidebar').classList.toggle('open', open); $('scrim').hidden = !open; $('menu-toggle').setAttribute('aria-expanded', String(open)); });
   $('scrim').addEventListener('click', closeSidebar);
-  document.querySelectorAll('[data-nav]').forEach((item) => item.addEventListener('click', () => { document.querySelectorAll('[data-nav]').forEach((nav) => nav.classList.toggle('active', nav === item)); $('page-title').textContent = navTitles[item.dataset.nav] || '总览'; closeSidebar(); }));
+  document.querySelectorAll('[data-nav]').forEach((item) => item.addEventListener('click', (event) => { event.preventDefault(); activateWorkspace(item.dataset.nav); }));
+  document.querySelectorAll('[data-go-workspace]').forEach((button) => button.addEventListener('click', () => activateWorkspace(button.dataset.goWorkspace)));
+  window.addEventListener('hashchange', () => activateWorkspace(location.hash.slice(1), false));
+  activateWorkspace(location.hash.slice(1) || 'overview', false);
   if ('EventSource' in window) {
     const stream = new EventSource('/api/v1/events');
     stream.addEventListener('tasks', (event) => { try { const payload = JSON.parse(event.data); allTasks = payload.tasks || []; renderTasks(allTasks); } catch (_) { /* reconnect will retry */ } });
   }
-  loadWebUpdate();
-  load();
+  loadSession().finally(() => {
+    loadWebUpdate();
+    load();
+  });
 })();

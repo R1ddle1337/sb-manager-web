@@ -3,92 +3,128 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#f7fbff">
-  <title>sb-manager · 控制中心</title>
+  <meta name="theme-color" content="#f5f7fb">
+  <title>sb-manager 控制台</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
-      <div class="brand"><div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div><div><strong>sb-manager</strong><small>CONTROL CENTER</small></div></div>
+      <a class="brand" href="#overview" data-nav="overview" aria-label="返回总览">
+        <span class="brand-mark">SB</span>
+        <span><strong>sb-manager</strong><small>服务器控制台</small></span>
+      </a>
       <nav class="side-nav" aria-label="主导航">
-        <p class="nav-label">工作区</p>
-        <a class="nav-item active" href="#overview" data-nav="overview" data-short="总"><span class="nav-text">总览</span></a>
-        <a class="nav-item" href="#servers" data-nav="servers" data-short="服"><span class="nav-text">服务器</span></a>
-        <a class="nav-item" href="#nodes" data-nav="nodes" data-short="节"><span class="nav-text">节点与用户</span></a>
-        <a class="nav-item" href="#quick-actions" data-nav="quick-actions" data-short="快"><span class="nav-text">快捷操作</span></a>
-        <a class="nav-item" href="#realm" data-nav="realm" data-short="R"><span class="nav-text">Hysteria Realm</span></a>
-        <a class="nav-item" href="#certificates" data-nav="certificates" data-short="证"><span class="nav-text">证书</span></a>
-        <a class="nav-item" href="#tasks" data-nav="tasks" data-short="任"><span class="nav-text">任务与审计</span></a>
-        <a class="nav-item" href="/settings/users" data-short="权"><span class="nav-text">用户与权限</span></a>
-        <a class="nav-item" href="/operations" data-short="运"><span class="nav-text">运维中心</span></a>
+        <span class="nav-label">工作区</span>
+        <a class="nav-item active" href="#overview" data-nav="overview"><span class="nav-icon">⌂</span><span>总览</span></a>
+        <a class="nav-item" href="#servers" data-nav="servers"><span class="nav-icon">▦</span><span>服务器</span></a>
+        <a class="nav-item" href="#nodes" data-nav="nodes"><span class="nav-icon">◇</span><span>节点与用户</span></a>
+        <a class="nav-item" href="#tasks" data-nav="tasks"><span class="nav-icon">✓</span><span>任务记录</span></a>
+        <a class="nav-item" href="#system" data-nav="system"><span class="nav-icon">⚙</span><span>系统维护</span></a>
+        <span class="nav-label">更多</span>
+        <a class="nav-item" href="/operations"><span class="nav-icon">⌁</span><span>高级运维</span></a>
+        <a class="nav-item" href="/settings/users"><span class="nav-icon">♙</span><span>账号与安全</span></a>
       </nav>
-      <div class="sidebar-footer"><div class="secure-note"><span class="status-dot online"></span><span><strong>本机安全连接</strong><small>秘密仅保留在服务器</small></span></div><div class="version">WebUI v{{.Version}} · SQLite</div></div>
+      <div class="sidebar-footer">
+        <div class="secure-note"><span class="status-dot online"></span><span><strong>安全执行</strong><small>固定动作 · 无终端入口</small></span></div>
+        <span class="version">WebUI {{.Version}}</span>
+      </div>
     </aside>
+
     <div class="main-shell">
       <header class="topbar">
-        <button class="mobile-menu" id="menu-toggle" aria-label="打开导航" aria-expanded="false">菜单</button>
-        <div class="breadcrumbs"><span>控制中心</span><i>/</i><strong id="page-title">总览</strong></div>
-        <div class="topbar-actions"><span class="connection-pill"><span class="status-dot online"></span>本机在线</span><button id="refresh" class="compact-button" title="刷新数据" aria-label="刷新数据">刷新</button><form method="post" action="/logout"><button class="user-button" type="submit" title="退出登录"><span class="avatar">S</span><span class="user-name">管理员</span></button></form></div>
+        <button class="mobile-menu icon-button" id="menu-toggle" type="button" aria-label="打开导航" aria-expanded="false">☰</button>
+        <div class="breadcrumbs"><span>控制台</span><i>/</i><strong id="page-title">总览</strong></div>
+        <div class="topbar-actions">
+          <span class="connection-pill"><span class="status-dot online"></span>控制端在线</span>
+          <select id="refresh-interval" class="compact-select" title="自动刷新间隔" aria-label="自动刷新间隔"><option value="0">手动刷新</option><option value="30">每 30 秒</option><option value="60">每 60 秒</option></select>
+          <button id="refresh" class="compact-button" type="button">刷新</button>
+          <div class="user-summary"><span class="avatar" id="user-avatar">S</span><span><strong id="current-user">读取中…</strong><small id="current-role">-</small></span></div>
+          <form method="post" action="/logout"><button class="icon-button" type="submit" title="退出登录" aria-label="退出登录">↪</button></form>
+        </div>
       </header>
-      <main class="content" id="overview">
-        <section class="welcome-row"><div><p class="eyebrow">SERVER OPERATIONS</p><h1>欢迎回来，管理员</h1><p class="muted">统一查看 sing-box 服务状态，安全地执行日常运维操作。</p></div><button id="add-server" class="primary-button">添加服务器</button></section>
-        <section id="alerts" aria-live="polite"></section>
-        <section class="panel web-update-panel" id="web-update-panel"><div class="panel-header"><div><p class="eyebrow">WEBUI UPDATE</p><h2>面板更新</h2><p class="muted panel-subtitle">检查并更新 sb-manager-web 本身，不会修改节点配置或数据库。</p></div><div class="web-version"><span>当前版本</span><strong id="web-current-version">读取中…</strong></div></div><div class="web-update-row"><p id="web-update-status" class="muted">正在检查 GitHub Release…</p><div class="web-update-actions"><button id="web-update-check" class="secondary-button" type="button">检查更新</button><button id="web-update-button" class="primary-button" type="button" hidden>立即更新</button></div></div></section>
-        <section class="kpi-grid" aria-label="关键指标"><article class="kpi-card accent-blue"><div class="kpi-heading"><span>服务状态</span></div><strong id="service-state">读取中…</strong><small><span class="status-dot online"></span> sing-box 守护进程</small></article><article class="kpi-card accent-violet"><div class="kpi-heading"><span>活跃节点</span></div><strong id="node-count">读取中…</strong><small>本机配置中的节点</small></article><article class="kpi-card accent-green"><div class="kpi-heading"><span>BBR 加速</span></div><strong id="bbr-state">读取中…</strong><small>Linux TCP 拥塞控制</small></article><article class="kpi-card accent-amber"><div class="kpi-heading"><span>HY2 UDP 缓冲</span></div><strong id="hy2-state">读取中…</strong><small>官方推荐 16 MiB</small></article></section>
-        <section class="panel"><div class="panel-header"><div><p class="eyebrow">24H TREND</p><h2>运行趋势</h2></div><button id="trend-refresh" class="secondary-button">采样并刷新</button></div><div id="metric-trend" class="metric-trend">暂无历史样本。</div></section>
-        <section class="dashboard-grid"><article class="panel status-panel"><div class="panel-header"><div><p class="eyebrow">LOCAL INSTANCE</p><h2>本机运行状态</h2></div><span class="live-badge"><span class="status-dot online"></span>实时</span></div><div class="runtime-meta"><span class="core-chip" id="core-version">核心：读取中…</span><span class="muted">声明式配置 · 自动回滚</span></div><pre id="status-output" class="output">读取中…</pre></article><article class="panel quick-panel" id="quick-actions"><div class="panel-header"><div><p class="eyebrow">ONE-CLICK</p><h2>快捷操作</h2></div><span class="muted">安全任务</span></div><div class="quick-actions"><button data-action="bbr.enable" class="quick-action"><span><strong>开启 BBR</strong><small>优化 TCP 吞吐</small></span></button><button data-action="hy2-buffer.enable" class="quick-action"><span><strong>开启 HY2 UDP</strong><small>设置为 16 MiB</small></span></button><button data-action="core.update" class="quick-action"><span><strong>更新 sing-box</strong><small>保持最新核心</small></span></button><button data-action="backup.create" class="quick-action"><span><strong>创建备份</strong><small>保存当前状态</small></span></button></div><div class="quick-footer"><button data-action="health.check" class="text-button">运行健康检查</button><button data-action="doctor.repair-safe" class="text-button">安全修复</button></div></article></section>
-        <section class="panel" id="servers"><div class="panel-header"><div><p class="eyebrow">FLEET</p><h2>服务器</h2><p class="muted panel-subtitle">管理已加入的实例，批量执行常用任务。</p></div><button class="secondary-button" id="server-refresh" type="button">刷新列表</button></div><div class="table-wrap" id="servers-list">读取中…</div><div class="batch-toolbar"><form id="batch-form" class="batch-form"><select name="action" aria-label="批量操作"><option value="bbr.enable">批量开启 BBR</option><option value="hy2-buffer.enable">批量开启 HY2 UDP</option><option value="core.update">批量更新核心</option><option value="agent.update" id="agent-update-option" hidden>批量更新 Agent</option><option value="backup.create">批量备份</option><option value="health.check">批量健康检查</option></select><button type="submit" class="secondary-button">对选中服务器执行</button></form></div></section>
-        <section class="panel" id="nodes"><div class="panel-header"><div><p class="eyebrow">INBOUNDS</p><h2>节点与用户</h2><p class="muted panel-subtitle">通过 sb-manager 管理协议、端口与访问用户。</p></div><a class="text-button" href="/api/v1/nodes" target="_blank" rel="noreferrer">查看 JSON</a></div>
-          <form id="add-node-form" class="form-grid compact-form"><input name="id" placeholder="节点 ID" pattern="[a-z0-9][a-z0-9._-]{0,47}" required><select name="protocol" aria-label="协议"><option value="vmess">VMess-WS-CF</option><option value="ss">Shadowsocks 2022</option><option value="anytls">AnyTLS</option><option value="hy2">Hysteria2</option><option value="trojan">Trojan</option><option value="tuic">TUIC</option><option value="vless">VLESS</option><option value="naive">NaiveProxy</option><option value="shadowtls">ShadowTLS</option><option value="snell">Snell v6 / v5</option></select><input name="port" type="number" min="1" max="65535" placeholder="端口" required><input name="domain" placeholder="域名（TLS/HY2）"><input name="address" placeholder="服务器地址"><button type="submit" class="primary-button">添加节点</button>
-            <details class="subsection protocol-options"><summary>协议与 sing-box 1.14 高级选项</summary><p class="muted field-hint">只填写当前协议需要的字段；最终校验、候选配置、check、切换和回滚仍由 sb-manager 执行。</p><div class="advanced-grid">
-              <label class="field-group" data-protocols="ss">SS 加密方法<select name="method"><option value="2022-blake3-aes-256-gcm">2022-blake3-aes-256-gcm</option><option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option><option value="2022-blake3-chacha20-poly1305">2022-blake3-chacha20-poly1305</option></select></label>
-              <label class="field-group" data-protocols="vmess">WebSocket 路径<input name="path" placeholder="/ws"></label>
-              <label class="field-group" data-protocols="ss,naive">网络<select name="network"><option value="tcp">TCP</option><option value="udp">UDP</option></select></label>
-              <label class="field-group" data-protocols="hy2,snell">混淆<select name="obfs"><option value="">不启用</option><option value="salamander">Salamander</option><option value="gecko">Gecko（1.14+）</option><option value="none">None（Snell v5）</option><option value="http">HTTP（Snell v5）</option></select></label>
-              <label class="field-group" data-protocols="snell">Snell 版本<select name="snell_version"><option value="6">v6（1.14 rc.2+）</option><option value="5">v5</option></select></label>
-              <label class="field-group" data-protocols="snell">Snell v6 模式<select name="snell_mode"><option value="default">default · traffic shaping</option><option value="unshaped">unshaped</option><option value="unsafe-raw">unsafe-raw</option></select></label>
-              <label class="field-group" data-protocols="snell">Snell HTTP obfs Host<input name="obfs_host" placeholder="bing.com"></label>
-              <label class="field-group" data-protocols="hy2">Gecko 最小包长<input name="obfs_min_packet_size" type="number" min="64" max="1500" placeholder="64"></label>
-              <label class="field-group" data-protocols="hy2">Gecko 最大包长<input name="obfs_max_packet_size" type="number" min="64" max="1500" placeholder="1500"></label>
-              <label class="field-group" data-protocols="hy2">BBR profile<select name="bbr_profile"><option value="">默认</option><option value="conservative">conservative</option><option value="standard">standard</option><option value="aggressive">aggressive</option></select></label>
-              <label class="field-group" data-protocols="hy2">伪装页面 URL<input name="masquerade" placeholder="https://example.com"></label>
-              <label class="field-group checkbox-field" data-protocols="hy2"><input name="disable_chrome_parrot" type="checkbox">关闭 Chrome QUIC 指纹（1.14+）</label>
-              <label class="field-group checkbox-field" data-protocols="hy2"><input name="brutal_debug" type="checkbox">启用 Brutal debug（1.14+）</label>
-              <label class="field-group" data-protocols="hy2">Realm ID（先启用全局 Realm）<input name="realm_id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" placeholder="slot-a"></label>
-              <label class="field-group" data-protocols="hy2">Realm IP 版本<select name="realm_ip_version"><option value="0">自动</option><option value="4">IPv4</option><option value="6">IPv6</option></select></label>
-              <label class="field-group checkbox-field" data-protocols="hy2"><input name="realm_port_mapping" type="checkbox">启用 UPnP / NAT-PMP 端口映射</label>
-              <label class="field-group" data-protocols="vless">VLESS 安全<select name="security"><option value="tls">TLS</option><option value="reality">Reality</option></select></label>
-              <label class="field-group" data-protocols="vless">VLESS flow<input name="flow" value="xtls-rprx-vision"></label>
-              <label class="field-group" data-protocols="vless,shadowtls">握手服务器<input name="handshake_server" placeholder="www.cloudflare.com"></label>
-              <label class="field-group" data-protocols="vless,shadowtls">握手端口<input name="handshake_port" type="number" min="1" max="65535" value="443"></label>
-              <label class="field-group" data-protocols="tuic">拥塞控制<select name="congestion_control"><option value="cubic">cubic</option><option value="new_reno">new_reno</option><option value="bbr">bbr</option></select></label>
-              <label class="field-group" data-protocols="shadowtls">严格模式<select name="strict_mode"><option value="true">开启</option><option value="false">关闭</option></select></label>
-              <label class="field-group" data-protocols="shadowtls">Wildcard SNI<select name="wildcard_sni"><option value="off">off</option><option value="authed">authed</option><option value="all">all</option></select></label>
-            </div></details>
-          </form>
-          <div class="table-wrap" id="nodes-list">读取中…</div><pre id="share-output" class="output share-output" hidden></pre><details class="subsection"><summary>添加节点用户</summary><form id="add-user-form" class="form-grid compact-form"><input name="node_id" placeholder="节点 ID" required><input name="user_id" placeholder="用户 ID" required><input name="name" placeholder="用户名称"><button type="submit" class="secondary-button">添加用户</button></form></details>
-        </section>
-        <section class="panel" id="realm"><div class="panel-header"><div><p class="eyebrow">NAT TRAVERSAL · SING-BOX 1.14+</p><h2>Hysteria Realm</h2><p class="muted panel-subtitle">全局启用 Realm 服务后，Hysteria2 节点可以通过 Realm 进行 NAT 穿透。</p></div><div class="realm-status"><span id="realm-state">读取中…</span><button data-action="realm.disable" id="realm-disable" class="secondary-button" type="button">停用</button></div></div><div class="realm-layout"><pre id="realm-output" class="output">读取中…</pre><form id="realm-form" class="form-grid realm-form"><input name="port" type="number" min="1" max="65535" value="9443" placeholder="监听端口" required><input name="public_url" type="url" placeholder="https://relay.example.com" required><input name="listen" value="::" placeholder="监听地址"><input name="tls_domain" placeholder="TLS 域名（可选）"><input name="max_realms" type="number" min="0" max="1000000" value="0" placeholder="最大 Realm 数"><button type="submit" class="primary-button">启用 / 更新 Realm</button></form></div></section>
-        <section class="two-column"><article class="panel" id="certificates"><div class="panel-header"><div><p class="eyebrow">TLS</p><h2>节点证书</h2></div><a class="text-button" href="/api/v1/certificates" target="_blank" rel="noreferrer">查看 JSON</a></div><p class="muted panel-subtitle">申请或续签 sing-box 节点 ACME 证书，私钥只保留在本机。面板自身 HTTPS 证书请在 SSH 中重新运行安装器配置。</p><form id="cert-form" class="stack-form"><input name="domain" placeholder="example.com" required><input name="email" type="email" placeholder="ACME 邮箱（可选）"><button type="submit" class="primary-button">申请 / 续签节点证书</button></form></article><article class="panel"><div class="panel-header"><div><p class="eyebrow">ACCOUNT</p><h2>安全设置</h2></div><span class="muted">修改后重新登录</span></div><form id="password-form" class="stack-form"><input name="current" type="password" autocomplete="current-password" placeholder="当前密码" required><input name="next" type="password" autocomplete="new-password" minlength="12" placeholder="新密码（至少 12 位）" required><button type="submit" class="secondary-button">修改密码</button></form></article></section>
-        <section class="panel" id="tasks"><div class="panel-header"><div><p class="eyebrow">AUDIT TRAIL</p><h2>最近任务</h2><p class="muted panel-subtitle">所有操作均记录审计事件，便于追踪与回滚。</p></div><a class="text-button" href="/api/v1/tasks" target="_blank" rel="noreferrer">打开 JSON</a></div><div class="table-wrap" id="tasks-list">读取中…</div></section>
+
+      <main class="content">
+        <section id="alerts" class="alerts" aria-live="polite"></section>
+
+        <div class="workspace" data-workspace-panel="overview">
+          <header class="workspace-heading">
+            <div><p class="eyebrow">OVERVIEW</p><h1>先看状态，再做操作</h1><p class="muted">这里只保留今天真正需要关注的内容。复杂配置放在对应工作区里。</p></div>
+            <div class="heading-actions"><button class="secondary-button" type="button" data-open-node>添加节点</button><button class="primary-button" id="add-server" type="button" data-open-server>添加服务器</button></div>
+          </header>
+
+          <section class="kpi-grid" aria-label="关键指标">
+            <article class="kpi-card accent-blue"><div class="kpi-heading"><span>sing-box 服务</span><span class="status-dot online"></span></div><strong id="service-state">读取中…</strong><small>本机守护进程</small></article>
+            <article class="kpi-card accent-violet"><div class="kpi-heading"><span>本机节点</span></div><strong id="node-count">读取中…</strong><small>当前配置数量</small></article>
+            <article class="kpi-card accent-green"><div class="kpi-heading"><span>BBR</span></div><strong id="bbr-state">读取中…</strong><small>TCP 拥塞控制</small></article>
+            <article class="kpi-card accent-amber"><div class="kpi-heading"><span>HY2 UDP</span></div><strong id="hy2-state">读取中…</strong><small>系统缓冲区</small></article>
+          </section>
+
+          <section class="overview-grid">
+            <article class="panel action-center">
+              <div class="panel-header"><div><p class="eyebrow">COMMON ACTIONS</p><h2>常用操作</h2><p class="muted panel-subtitle">高频动作集中在这里，提交后可去“任务记录”查看结果。</p></div><span class="core-chip" id="core-version">核心：读取中…</span></div>
+              <div class="action-list">
+                <button data-action="health.check" class="action-row"><span class="action-symbol green">✓</span><span><strong>运行健康检查</strong><small>检查服务、端口、证书和配置状态</small></span><b>执行</b></button>
+                <button data-action="backup.create" class="action-row"><span class="action-symbol blue">↧</span><span><strong>创建配置备份</strong><small>变更前保存一份可恢复快照</small></span><b>执行</b></button>
+                <button data-action="bbr.enable" class="action-row"><span class="action-symbol violet">B</span><span><strong>启用 BBR</strong><small>优化 TCP 吞吐和延迟</small></span><b>执行</b></button>
+                <button data-action="hy2-buffer.enable" class="action-row"><span class="action-symbol amber">U</span><span><strong>优化 HY2 UDP 缓冲</strong><small>应用推荐的系统缓冲区设置</small></span><b>执行</b></button>
+                <button data-action="core.update" data-confirm="确认更新 sing-box 核心？建议先创建备份。" class="action-row"><span class="action-symbol blue">↑</span><span><strong>更新 sing-box 核心</strong><small>检查并安装可用核心版本</small></span><b>执行</b></button>
+              </div>
+            </article>
+
+            <article class="panel getting-started">
+              <div class="panel-header"><div><p class="eyebrow">NEXT STEP</p><h2>接下来做什么</h2></div></div>
+              <button class="guide-card" type="button" data-go-workspace="servers"><span>1</span><div><strong>管理服务器</strong><small>查看在线状态、Agent 版本和批量发布。</small></div><b>→</b></button>
+              <button class="guide-card" type="button" data-go-workspace="nodes"><span>2</span><div><strong>管理节点</strong><small>创建协议节点、启停和生成分享链接。</small></div><b>→</b></button>
+              <button class="guide-card" type="button" data-go-workspace="tasks"><span>3</span><div><strong>查看执行结果</strong><small>失败任务可以查看原因、取消或重试。</small></div><b>→</b></button>
+            </article>
+          </section>
+
+          <section class="panel trend-panel"><div class="panel-header"><div><p class="eyebrow">24H TREND</p><h2>节点数量趋势</h2></div><button id="trend-refresh" class="secondary-button" type="button">采样一次</button></div><div id="metric-trend" class="metric-trend">暂无历史样本。</div></section>
+          <details class="raw-details"><summary>查看本机原始状态 JSON</summary><pre id="status-output" class="output">读取中…</pre></details>
+        </div>
+
+        <div class="workspace" data-workspace-panel="servers" hidden>
+          <header class="workspace-heading"><div><p class="eyebrow">FLEET</p><h1>服务器</h1><p class="muted">先选目标，再选择动作和发布策略。离线或不兼容的服务器会在预检查中跳过。</p></div><button class="primary-button" type="button" data-open-server>添加服务器</button></header>
+          <section class="panel" id="servers"><div class="panel-header"><div><h2>服务器清单</h2><p class="muted panel-subtitle">点击服务器名称进入详情页。</p></div><div class="panel-tools"><input id="server-search" class="server-search" type="search" placeholder="搜索名称、地址、地区或版本"><button class="secondary-button" id="server-refresh" type="button">刷新</button></div></div><div class="table-wrap" id="servers-list">读取中…</div></section>
+          <section class="panel batch-panel"><div class="panel-header"><div><h2>批量操作</h2><p class="muted panel-subtitle">勾选上方服务器后执行。提交前会显示实际执行和跳过的服务器。</p></div><span class="selection-count" id="server-selection-count">尚未选择服务器</span></div><form id="batch-form" class="batch-form"><label><span>发布策略</span><select id="batch-strategy" aria-label="发布策略"><option value="all">全部执行</option><option value="canary">先执行 1 台</option><option value="percentage">按百分比灰度</option></select></label><label id="batch-percentage-field" hidden><span>执行比例</span><input id="batch-percentage" type="number" min="1" max="100" value="25"></label><label><span>执行动作</span><select name="action" aria-label="批量操作"><option value="health.check">健康检查</option><option value="backup.create">创建备份</option><option value="bbr.enable">开启 BBR</option><option value="hy2-buffer.enable">优化 HY2 UDP</option><option value="core.update">更新核心</option><option value="agent.update" id="agent-update-option" hidden>更新 Agent</option></select></label><button type="submit" class="primary-button">预检查并执行</button></form></section>
+        </div>
+
+        <div class="workspace" data-workspace-panel="nodes" hidden>
+          <header class="workspace-heading"><div><p class="eyebrow">INBOUNDS</p><h1>节点与访问用户</h1><p class="muted">日常操作直接在列表完成；协议高级参数只在创建或编辑时出现。</p></div><button class="primary-button" type="button" data-open-node>添加节点</button></header>
+          <section class="panel" id="nodes"><div class="panel-header"><div><h2>本机节点</h2><p class="muted panel-subtitle">点击节点 ID 进入完整编辑页。</p></div><a class="text-button" href="/api/v1/nodes" target="_blank" rel="noreferrer">查看 JSON</a></div><div class="table-wrap" id="nodes-list">读取中…</div><pre id="share-output" class="output share-output" hidden></pre></section>
+          <section class="panel compact-panel"><div class="panel-header"><div><h2>添加节点用户</h2><p class="muted panel-subtitle">为已有节点增加独立访问用户。</p></div></div><form id="add-user-form" class="inline-form"><label><span>节点 ID</span><input name="node_id" placeholder="例如 hy2-main" required></label><label><span>用户 ID</span><input name="user_id" placeholder="例如 phone" required></label><label><span>显示名称</span><input name="name" placeholder="可选"></label><button type="submit" class="primary-button">添加用户</button></form></section>
+        </div>
+
+        <div class="workspace" data-workspace-panel="tasks" hidden>
+          <header class="workspace-heading"><div><p class="eyebrow">TASKS</p><h1>任务记录</h1><p class="muted">所有变更都先形成任务。这里是判断“到底执行成功没有”的唯一入口。</p></div></header>
+          <section class="panel" id="tasks"><div class="panel-header"><div><h2>最近任务</h2><p class="muted panel-subtitle">点击“详情”查看完整输出；失败和取消的任务可以重试。</p></div><div class="task-tools"><select id="task-filter" aria-label="任务状态筛选"><option value="all">全部状态</option><option value="pending">等待中</option><option value="running">执行中</option><option value="success">成功</option><option value="failed">失败</option><option value="canceled">已取消</option></select><span id="batch-progress" class="muted"></span></div></div><div class="table-wrap" id="tasks-list">读取中…</div></section>
+        </div>
+
+        <div class="workspace" data-workspace-panel="system" hidden>
+          <header class="workspace-heading"><div><p class="eyebrow">MAINTENANCE</p><h1>系统维护</h1><p class="muted">低频、影响范围较大的配置集中在这里。高级网络和通知设置仍在“高级运维”。</p></div><a class="secondary-button" href="/operations">打开高级运维</a></header>
+          <section class="panel web-update-panel" id="web-update-panel"><div class="panel-header"><div><h2>WebUI 更新</h2><p class="muted panel-subtitle">只更新控制端程序，不修改节点、数据库或证书。</p></div><div class="web-version"><span>当前版本</span><strong id="web-current-version">读取中…</strong></div></div><div class="web-update-row"><p id="web-update-status" class="muted">正在检查 GitHub Release…</p><div class="web-update-actions"><button id="web-update-check" class="secondary-button" type="button">重新检查</button><button id="web-update-button" class="primary-button" type="button" hidden>立即更新</button></div></div></section>
+          <section class="panel" id="quick-actions"><div class="panel-header"><div><h2>维护动作</h2><p class="muted panel-subtitle">这些操作可能改变系统状态，请确认目标和影响。</p></div></div><div class="button-grid"><button data-action="core.check" class="secondary-button">检查核心更新</button><button data-action="core.rollback" data-confirm="确认回滚 sing-box 核心？" class="secondary-button">回滚核心</button><button data-action="doctor.repair-safe" data-confirm="确认运行安全修复？" class="secondary-button">运行安全修复</button><button data-action="service.restart" data-confirm="确认重启 sing-box 服务？连接会短暂中断。" class="secondary-button">重启服务</button></div></section>
+          <section class="panel" id="realm"><div class="panel-header"><div><h2>Hysteria Realm</h2><p class="muted panel-subtitle">仅在需要 NAT 穿透时启用。普通节点无需配置。</p></div><div class="realm-status"><span id="realm-state">读取中…</span><button data-action="realm.disable" data-confirm="确认停用 Realm？相关节点可能失去穿透能力。" id="realm-disable" class="secondary-button" type="button">停用</button></div></div><div class="realm-layout"><details class="raw-details" open><summary>当前状态</summary><pre id="realm-output" class="output">读取中…</pre></details><form id="realm-form" class="form-grid realm-form"><label><span>监听端口</span><input name="port" type="number" min="1" max="65535" value="9443" required></label><label><span>公网 URL</span><input name="public_url" type="url" placeholder="https://relay.example.com" required></label><label><span>监听地址</span><input name="listen" value="::"></label><label><span>TLS 域名</span><input name="tls_domain" placeholder="可选"></label><label><span>最大 Realm 数</span><input name="max_realms" type="number" min="0" max="1000000" value="0"></label><button type="submit" class="primary-button">保存 Realm 配置</button></form></div></section>
+          <section class="two-column"><article class="panel" id="certificates"><div class="panel-header"><div><h2>节点证书</h2><p class="muted panel-subtitle">这里管理 sing-box 节点证书，不是面板 HTTPS 证书。</p></div><a class="text-button" href="/api/v1/certificates" target="_blank" rel="noreferrer">查看状态</a></div><form id="cert-form" class="stack-form"><label><span>域名</span><input name="domain" placeholder="example.com" required></label><label><span>ACME 邮箱</span><input name="email" type="email" placeholder="可选"></label><button type="submit" class="primary-button">申请或续签</button></form></article><article class="panel"><div class="panel-header"><div><h2>修改密码</h2><p class="muted panel-subtitle">修改成功后需要重新登录。</p></div></div><form id="password-form" class="stack-form"><label><span>当前密码</span><input name="current" type="password" autocomplete="current-password" required></label><label><span>新密码</span><input name="next" type="password" autocomplete="new-password" minlength="12" placeholder="至少 12 位" required></label><button type="submit" class="secondary-button">修改密码</button></form></article></section>
+        </div>
       </main>
-      <footer class="page-footer"><span>sb-manager-web · 以现有 sb-manager 脚本为执行层</span><span>SQLite · 本机密钥隔离</span></footer>
+      <footer class="page-footer"><span>sb-manager-web · 控制层</span><span>状态变更由 sb-manager 校验并回滚</span></footer>
     </div>
   </div>
+
   <div class="scrim" id="scrim" hidden></div>
-  <dialog class="server-dialog" id="server-dialog" aria-labelledby="server-dialog-title">
-    <div class="dialog-header">
-      <div><p class="eyebrow">SERVER ENROLLMENT</p><h2 id="server-dialog-title">添加服务器</h2></div>
-      <button class="compact-button" id="server-dialog-close" type="button">关闭</button>
-    </div>
-    <p class="muted">在目标服务器的终端中执行下面的一次性命令。加入令牌将在十分钟后失效。</p>
-    <p class="dialog-status" id="server-dialog-status" aria-live="polite">正在创建加入命令…</p>
-    <pre id="join-command" class="output join-output" hidden></pre>
-    <div class="dialog-actions">
-      <button class="secondary-button" id="copy-join-command" type="button" hidden>复制命令</button>
-      <button class="primary-button" id="renew-enrollment" type="button" hidden>重新生成</button>
-    </div>
+  <dialog class="modal" id="server-dialog" aria-labelledby="server-dialog-title"><div class="dialog-header"><div><p class="eyebrow">SERVER ENROLLMENT</p><h2 id="server-dialog-title">添加服务器</h2></div><button class="icon-button" id="server-dialog-close" type="button" aria-label="关闭">×</button></div><p class="muted">在目标服务器终端执行生成的命令。令牌十分钟后失效，只能使用一次。</p><p class="dialog-status" id="server-dialog-status" aria-live="polite">正在创建加入命令…</p><pre id="join-command" class="output join-output" hidden></pre><div class="dialog-actions"><button class="secondary-button" id="copy-join-command" type="button" hidden>复制命令</button><button class="primary-button" id="renew-enrollment" type="button" hidden>重新生成</button></div></dialog>
+
+  <dialog class="modal node-dialog" id="node-dialog" aria-labelledby="node-dialog-title">
+    <div class="dialog-header"><div><p class="eyebrow">NEW NODE</p><h2 id="node-dialog-title">添加节点</h2><p class="muted">先填写基础信息；只有当前协议需要的高级项才会显示。</p></div><button class="icon-button" id="node-dialog-close" type="button" aria-label="关闭">×</button></div>
+    <form id="add-node-form" class="form-grid node-create-form">
+      <label><span>节点 ID</span><input name="id" placeholder="例如 hy2-main" pattern="[a-z0-9][a-z0-9._-]{0,47}" required></label><label><span>协议</span><select name="protocol" aria-label="协议"><option value="vmess">VMess-WS-CF</option><option value="ss">Shadowsocks 2022</option><option value="anytls">AnyTLS</option><option value="hy2">Hysteria2</option><option value="trojan">Trojan</option><option value="tuic">TUIC</option><option value="vless">VLESS</option><option value="naive">NaiveProxy</option><option value="shadowtls">ShadowTLS</option><option value="snell">Snell v6 / v5</option></select></label><label><span>监听端口</span><input name="port" type="number" min="1" max="65535" placeholder="443" required></label><label><span>域名</span><input name="domain" placeholder="TLS/HY2 使用"></label><label><span>服务器地址</span><input name="address" placeholder="可选，默认自动检测"></label>
+      <details class="subsection protocol-options"><summary>协议高级选项</summary><p class="muted field-hint">不确定时保持默认。最终校验和回滚仍由 sb-manager 完成。</p><div class="advanced-grid">
+        <label class="field-group" data-protocols="ss"><span>SS 加密方法</span><select name="method"><option value="2022-blake3-aes-256-gcm">2022-blake3-aes-256-gcm</option><option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option><option value="2022-blake3-chacha20-poly1305">2022-blake3-chacha20-poly1305</option></select></label><label class="field-group" data-protocols="vmess"><span>WebSocket 路径</span><input name="path" placeholder="/ws"></label><label class="field-group" data-protocols="ss,naive"><span>网络</span><select name="network"><option value="tcp">TCP</option><option value="udp">UDP</option></select></label><label class="field-group" data-protocols="hy2,snell"><span>混淆</span><select name="obfs"><option value="">不启用</option><option value="salamander">Salamander</option><option value="gecko">Gecko（1.14+）</option><option value="none">None（Snell v5）</option><option value="http">HTTP（Snell v5）</option></select></label><label class="field-group" data-protocols="snell"><span>obfs Host</span><input name="obfs_host" placeholder="www.example.com"></label><label class="field-group" data-protocols="hy2"><span>Gecko 最小包长</span><input name="obfs_min_packet_size" type="number" min="64" max="1500" placeholder="600"></label><label class="field-group" data-protocols="hy2"><span>Gecko 最大包长</span><input name="obfs_max_packet_size" type="number" min="64" max="1500" placeholder="1100"></label><label class="field-group" data-protocols="snell"><span>Snell 版本</span><select name="snell_version"><option value="6">v6</option><option value="5">v5</option></select></label><label class="field-group" data-protocols="snell"><span>Snell 模式</span><select name="snell_mode"><option value="default">default</option><option value="unshaped">unshaped</option><option value="unsafe-raw">unsafe-raw</option></select></label><label class="field-group" data-protocols="hy2"><span>BBR Profile</span><select name="bbr_profile"><option value="">默认</option><option value="conservative">保守</option><option value="standard">标准</option><option value="aggressive">激进</option></select></label><label class="field-group" data-protocols="hy2"><span>伪装 URL</span><input name="masquerade" placeholder="https://example.com"></label><label class="field-group checkbox-field" data-protocols="hy2"><input name="disable_chrome_parrot" type="checkbox"><span>关闭 Chrome QUIC 指纹</span></label><label class="field-group checkbox-field" data-protocols="hy2"><input name="brutal_debug" type="checkbox"><span>启用 Brutal Debug</span></label><label class="field-group" data-protocols="hy2"><span>Realm ID</span><input name="realm_id" pattern="[A-Za-z0-9][A-Za-z0-9_-]{0,63}" placeholder="slot-a"></label><label class="field-group" data-protocols="hy2"><span>Realm IP</span><select name="realm_ip_version"><option value="0">自动</option><option value="4">IPv4</option><option value="6">IPv6</option></select></label><label class="field-group checkbox-field" data-protocols="hy2"><input name="realm_port_mapping" type="checkbox"><span>启用端口映射</span></label><label class="field-group" data-protocols="vless"><span>VLESS 安全</span><select name="security"><option value="tls">TLS</option><option value="reality">Reality</option></select></label><label class="field-group" data-protocols="vless"><span>VLESS Flow</span><input name="flow" value="xtls-rprx-vision"></label><label class="field-group" data-protocols="vless,shadowtls"><span>握手服务器</span><input name="handshake_server" placeholder="www.cloudflare.com"></label><label class="field-group" data-protocols="vless,shadowtls"><span>握手端口</span><input name="handshake_port" type="number" min="1" max="65535" value="443"></label><label class="field-group" data-protocols="tuic"><span>拥塞控制</span><select name="congestion_control"><option value="cubic">cubic</option><option value="new_reno">new_reno</option><option value="bbr">bbr</option></select></label><label class="field-group" data-protocols="shadowtls"><span>严格模式</span><select name="strict_mode"><option value="true">开启</option><option value="false">关闭</option></select></label><label class="field-group" data-protocols="shadowtls"><span>Wildcard SNI</span><select name="wildcard_sni"><option value="off">off</option><option value="authed">authed</option><option value="all">all</option></select></label>
+      </div></details>
+      <div class="dialog-actions form-actions"><button type="button" class="secondary-button" id="node-dialog-cancel">取消</button><button type="submit" class="primary-button">创建节点</button></div>
+    </form>
   </dialog>
   <script src="/static/app.js" defer></script>
 </body>

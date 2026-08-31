@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Rework the WebUI around five task-oriented workspaces, a persistent navigation model, progressive node creation, explicit batch controls, human-readable task states and responsive mobile layouts.
 - Add capability-gated remote Agent self-updates with per-server controls, gray batch rollout, atomic binary replacement, supervisor restart and heartbeat confirmation.
 - Resume requeued local tasks after controller restarts, record their running timestamps, preserve the authenticated audit actor, and make local HTTPS status checks work with panel certificates.
 - Build GitHub Release artifacts through the shared Makefile so both the WebUI and Agent receive the tagged version.
