@@ -15,6 +15,7 @@ import (
 
 	"github.com/R1ddle1337/sb-manager-web/internal/config"
 	"github.com/R1ddle1337/sb-manager-web/internal/storage"
+	"github.com/R1ddle1337/sb-manager-web/internal/types"
 )
 
 func fakeSB(t *testing.T) string {
@@ -206,6 +207,287 @@ func TestLoginStatusAndAction(t *testing.T) {
 	metricsTokenResponse.Body.Close()
 	if metricsTokenResponse.StatusCode != http.StatusOK {
 		t.Fatalf("metrics token status: %d", metricsTokenResponse.StatusCode)
+	}
+}
+
+func TestResumeLocalTasksAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.DataDir, cfg.Database, cfg.SBPath = dir, filepath.Join(dir, "web.db"), fakeSB(t)
+	cfg.Tasks.DefaultTimeout = time.Second
+	store, err := storage.Open(cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := types.Task{ID: "task_restart", ServerID: types.ServerLocal, Action: "bbr.enable", Status: types.TaskRunning, CreatedAt: time.Now().UTC()}
+	if err := store.PutTask(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = storage.Open(cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	recovered, err := store.GetTask(task.ID)
+	if err != nil || recovered.Status != types.TaskPending {
+		t.Fatalf("recovered task=%#v err=%v", recovered, err)
+	}
+	handler, _, err := New(cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.ResumeLocalTasks(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		completed, getErr := store.GetTask(task.ID)
+		if getErr == nil && completed.Status == types.TaskSuccess {
+			if completed.StartedAt == nil || completed.FinishedAt == nil {
+				t.Fatalf("task timestamps were not recorded: %#v", completed)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	final, _ := store.GetTask(task.ID)
+	t.Fatalf("recovered local task did not finish: %#v", final)
+}
+
+func TestAuditUsesAuthenticatedUsername(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.DataDir, cfg.Database, cfg.SBPath = dir, filepath.Join(dir, "web.db"), fakeSB(t)
+	cfg.Tasks.DefaultTimeout = time.Second
+	store, err := storage.Open(cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	handler, initial, err := New(cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(handler.Handler())
+	defer server.Close()
+	client := server.Client()
+	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	login, err := client.PostForm(server.URL+"/login", url.Values{"username": {initial.Username}, "password": {initial.Password}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	login.Body.Close()
+	jar, _ := cookiejar.New(nil)
+	client.Jar = jar
+	client.Jar.SetCookies(mustURL(server.URL), login.Cookies())
+	csrf := ""
+	for _, cookie := range login.Cookies() {
+		if cookie.Name == csrfCookie {
+			csrf = cookie.Value
+		}
+	}
+	if err := store.PutServer(types.Server{ID: "srv_audit", Name: "audit", Online: true, LastSeen: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	do := func(method, path, body string) *http.Response {
+		t.Helper()
+		request, requestErr := http.NewRequest(method, server.URL+path, strings.NewReader(body))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-CSRF-Token", csrf)
+		response, requestErr := client.Do(request)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		return response
+	}
+	actionResponse := do(http.MethodPost, "/api/v1/servers/srv_audit/actions", `{"action":"bbr.enable","idempotency_key":"audit-action"}`)
+	var task types.Task
+	if err := json.NewDecoder(actionResponse.Body).Decode(&task); err != nil {
+		t.Fatal(err)
+	}
+	actionResponse.Body.Close()
+	if actionResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("action status: %d", actionResponse.StatusCode)
+	}
+	cancelResponse := do(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", `{}`)
+	cancelResponse.Body.Close()
+	if cancelResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("cancel status: %d", cancelResponse.StatusCode)
+	}
+	retryRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/tasks/"+task.ID+"/retry", strings.NewReader(`{}`))
+	retryRequest.Header.Set("Content-Type", "application/json")
+	retryRequest.Header.Set("X-CSRF-Token", csrf)
+	retryRequest.Header.Set("Idempotency-Key", "audit-retry")
+	retryResponse, err := client.Do(retryRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryResponse.Body.Close()
+	if retryResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("retry status: %d", retryResponse.StatusCode)
+	}
+	batchResponse := do(http.MethodPost, "/api/v1/batch/actions", `{"server_ids":["srv_audit"],"action":"health.check","args":{},"strategy":"all"}`)
+	batchResponse.Body.Close()
+	if batchResponse.StatusCode != http.StatusAccepted {
+		t.Fatalf("batch status: %d", batchResponse.StatusCode)
+	}
+	revokeResponse := do(http.MethodDelete, "/api/v1/servers/srv_audit", "")
+	revokeResponse.Body.Close()
+	if revokeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("revoke status: %d", revokeResponse.StatusCode)
+	}
+	events, err := store.ListAudit(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := map[string]bool{"bbr.enable": false, "task.cancel": false, "task.retry": false, "health.check": false, "server.revoke": false}
+	for _, event := range events {
+		if _, ok := wanted[event.Action]; !ok {
+			continue
+		}
+		if event.Actor != initial.Username {
+			t.Fatalf("audit %s actor=%q, want %q", event.Action, event.Actor, initial.Username)
+		}
+		wanted[event.Action] = true
+	}
+	for action, found := range wanted {
+		if !found {
+			t.Fatalf("missing audit event for %s: %#v", action, events)
+		}
+	}
+}
+
+func TestAgentUpdateQueueValidation(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.DataDir, cfg.Database, cfg.SBPath = dir, filepath.Join(dir, "web.db"), fakeSB(t)
+	store, err := storage.Open(cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	handler, initial, err := New(cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminSession := types.Session{Username: initial.Username}
+	if err := handler.auth.CreateUser("operator", "correct horse battery staple", "operator"); err != nil {
+		t.Fatal(err)
+	}
+	operatorSession := types.Session{Username: "operator"}
+	supported := types.Server{ID: "srv_supported", Name: "supported", Online: true, LastSeen: time.Now().UTC(), AgentVersion: "1.0.0", AgentFeatures: []string{"self_update_v1"}, StateDigest: "state-digest"}
+	legacy := types.Server{ID: "srv_legacy", Name: "legacy", Online: true, LastSeen: time.Now().UTC(), AgentVersion: "1.0.0"}
+	current := types.Server{ID: "srv_current", Name: "current", Online: true, LastSeen: time.Now().UTC(), AgentVersion: "2.0.0", AgentFeatures: []string{"self_update_v1"}}
+	for _, server := range []types.Server{supported, legacy, current} {
+		if err := store.PutServer(server); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorder := httptest.NewRecorder()
+	handler.enqueueAction(recorder, supported.ID, actionRequest{Action: "agent.update", Args: map[string]any{"version": "2.0.0"}, IdempotencyKey: "agent-update-test"}, adminSession)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("supported update status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var task types.Task
+	if err := json.NewDecoder(recorder.Body).Decode(&task); err != nil {
+		t.Fatal(err)
+	}
+	if task.Action != "agent.update" || task.ExpectedStateDigest != "" || task.Args["version"] != "2.0.0" {
+		t.Fatalf("unexpected Agent update task: %#v", task)
+	}
+	taskRequest := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/cancel", strings.NewReader(`{}`))
+	taskRecorder := httptest.NewRecorder()
+	handler.taskAPI(taskRecorder, taskRequest, operatorSession)
+	if taskRecorder.Code != http.StatusForbidden {
+		t.Fatalf("operator managed Agent update task: status=%d body=%s", taskRecorder.Code, taskRecorder.Body.String())
+	}
+	for _, test := range []struct {
+		name    string
+		server  string
+		session types.Session
+		args    map[string]any
+		status  int
+	}{
+		{"operator", supported.ID, operatorSession, map[string]any{"version": "2.0.0"}, http.StatusForbidden},
+		{"legacy", legacy.ID, adminSession, map[string]any{"version": "2.0.0"}, http.StatusConflict},
+		{"current", current.ID, adminSession, map[string]any{"version": "2.0.0"}, http.StatusConflict},
+		{"invalid", supported.ID, adminSession, map[string]any{"version": "bad version"}, http.StatusBadRequest},
+		{"local", types.ServerLocal, adminSession, map[string]any{"version": "2.0.0"}, http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler.enqueueAction(recorder, test.server, actionRequest{Action: "agent.update", Args: test.args, IdempotencyKey: "agent-update-" + test.name}, test.session)
+			if recorder.Code != test.status {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestAgentUpdateBatchPreflight(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Defaults()
+	cfg.DataDir, cfg.Database, cfg.SBPath = dir, filepath.Join(dir, "web.db"), fakeSB(t)
+	store, err := storage.Open(cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	handler, initial, err := New(cfg, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, server := range []types.Server{
+		{ID: "srv_old", Name: "old", Online: true, LastSeen: time.Now().UTC(), AgentVersion: "1.0.0", AgentFeatures: []string{"self_update_v1"}},
+		{ID: "srv_current", Name: "current", Online: true, LastSeen: time.Now().UTC(), AgentVersion: "2.0.0", AgentFeatures: []string{"self_update_v1"}},
+		{ID: "srv_legacy", Name: "legacy", Online: true, LastSeen: time.Now().UTC(), AgentVersion: "1.0.0"},
+	} {
+		if err := store.PutServer(server); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := `{"server_ids":["local","srv_old","srv_current","srv_legacy"],"action":"agent.update","args":{"version":"2.0.0"}}`
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/batch/preflight", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
+	handler.batchPreflight(recorder, request, types.Session{Username: initial.Username})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("preflight status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var result struct {
+		Eligible []struct {
+			ID string `json:"id"`
+		} `json:"eligible"`
+		Skipped []struct {
+			ID     string `json:"id"`
+			Reason string `json:"reason"`
+		} `json:"skipped"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Eligible) != 1 || result.Eligible[0].ID != "srv_old" || len(result.Skipped) != 3 {
+		t.Fatalf("unexpected preflight result: %#v", result)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/batch/actions", strings.NewReader(body))
+	recorder = httptest.NewRecorder()
+	handler.batchAction(recorder, request, types.Session{Username: initial.Username})
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("batch status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var batch struct {
+		Tasks []types.Task `json:"tasks"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&batch); err != nil {
+		t.Fatal(err)
+	}
+	if len(batch.Tasks) != 1 || batch.Tasks[0].ServerID != "srv_old" || batch.Tasks[0].ExpectedStateDigest != "" {
+		t.Fatalf("unexpected batch tasks: %#v", batch.Tasks)
 	}
 }
 

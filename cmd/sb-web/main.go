@@ -3,10 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -162,6 +166,11 @@ func serve(args []string) error {
 			return fmt.Errorf("prepare agent mTLS: %w", tlsErr)
 		}
 		httpServer.TLSConfig = tlsConfig
+	}
+	if err := handler.ResumeLocalTasks(); err != nil {
+		return fmt.Errorf("resume local tasks: %w", err)
+	}
+	if cfg.TLS.Enabled {
 		err = httpServer.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 	} else {
 		err = httpServer.ListenAndServe()
@@ -213,15 +222,19 @@ func serviceAction(action string) error {
 
 func update(args []string) error {
 	if os.Geteuid() != 0 {
-		return errors.New("更新 Web 面板需要 root，请使用 sudo sb-web update")
+		return errors.New("更新 sb-manager-web 需要 root，请使用 sudo sb-web update")
 	}
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	configPath := fs.String("config", defaultConfigPath, "配置文件")
 	targetVersion := fs.String("version", "", "目标版本（默认使用最新 Release）")
 	installerURL := fs.String("installer-url", os.Getenv("SBM_WEB_INSTALL_URL"), "安装器地址")
+	noRestart := fs.Bool("no-restart", false, "更新后不主动重启服务")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *targetVersion != "" && !runner.ValidVersion(*targetVersion) {
+		return errors.New("目标版本格式无效")
 	}
 	if *installerURL == "" {
 		*installerURL = defaultInstallerURL
@@ -281,14 +294,22 @@ func update(args []string) error {
 		"SBM_WEB_VAR="+cfg.DataDir,
 		"SBM_WEB_LOG="+cfg.LogDir,
 	)
-	cmdArgs := []string{scriptPath, "--update-only"}
-	if *targetVersion != "" {
-		cmdArgs = append(cmdArgs, "--version", *targetVersion)
-	}
+	cmdArgs := updateInstallerArgs(scriptPath, *targetVersion, *noRestart)
 	cmd := exec.Command("bash", cmdArgs...)
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	return cmd.Run()
+}
+
+func updateInstallerArgs(scriptPath, targetVersion string, noRestart bool) []string {
+	args := []string{scriptPath, "--update-only"}
+	if targetVersion != "" {
+		args = append(args, "--version", targetVersion)
+	}
+	if noRestart {
+		args = append(args, "--no-start")
+	}
+	return args
 }
 
 func serviceActionFor(action, systemdUnit, openRCService string) error {
@@ -680,11 +701,33 @@ func validateControllerURL(raw string) error {
 func status(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	listen := fs.String("listen", "127.0.0.1:9091", "WebUI 地址")
+	configPath := fs.String("config", defaultConfigPath, "配置文件")
+	listen := fs.String("listen", "", "覆盖 WebUI 监听地址")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	response, err := http.Get("http://" + *listen + "/healthz")
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if *listen != "" {
+		cfg.Listen = *listen
+	}
+	target, err := statusTarget(cfg)
+	if err != nil {
+		return err
+	}
+	transport := &http.Transport{}
+	if cfg.TLS.Enabled {
+		tlsConfig, tlsErr := statusTLSConfig(cfg)
+		if tlsErr != nil {
+			return tlsErr
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	response, err := client.Get(target)
 	if err != nil {
 		return fmt.Errorf("WebUI 不可用：%w", err)
 	}
@@ -692,8 +735,58 @@ func status(args []string) error {
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("WebUI 返回 HTTP %d", response.StatusCode)
 	}
-	fmt.Printf("sb-manager-web：运行中 (%s)\n", *listen)
+	fmt.Printf("sb-manager-web：运行中 (%s)\n", target)
 	return nil
+}
+
+func statusTarget(cfg config.Config) (string, error) {
+	host, port, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		return "", fmt.Errorf("WebUI 监听地址无效：%w", err)
+	}
+	switch host {
+	case "", "0.0.0.0":
+		host = "127.0.0.1"
+	case "::":
+		host = "::1"
+	}
+	scheme := "http"
+	if cfg.TLS.Enabled {
+		scheme = "https"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port) + "/healthz", nil
+}
+
+func statusTLSConfig(cfg config.Config) (*tls.Config, error) {
+	if cfg.TLS.CertFile == "" {
+		return nil, errors.New("WebUI TLS 证书路径为空")
+	}
+	certPEM, err := os.ReadFile(cfg.TLS.CertFile)
+	if err != nil {
+		return nil, fmt.Errorf("读取 WebUI TLS 证书失败：%w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(certPEM) {
+		return nil, errors.New("WebUI TLS 证书链无效")
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("WebUI TLS 证书 PEM 无效")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("解析 WebUI TLS 证书失败：%w", err)
+	}
+	serverName := ""
+	if len(certificate.DNSNames) > 0 {
+		serverName = certificate.DNSNames[0]
+	} else if len(certificate.IPAddresses) > 0 {
+		serverName = certificate.IPAddresses[0].String()
+	}
+	if serverName == "" {
+		return nil, errors.New("WebUI TLS 证书缺少 DNS/IP SAN")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots, ServerName: serverName}, nil
 }
 
 func resetPassword(args []string) error {
@@ -743,8 +836,8 @@ func usage() {
   sb-web disable|restart|logs           服务管理
   sb-web agent [--config PATH]
   sb-web join CONTROLLER_URL TOKEN
-  sb-web update [--version VERSION]
-  sb-web status [--listen HOST:PORT]
+  sb-web update [--version VERSION] [--no-restart]
+  sb-web status [--config PATH] [--listen HOST:PORT]
   sb-web init [--config PATH]           初始化配置和管理员账号
   sb-web reset-admin-password [USERNAME] [PASSWORD]
   sb-web uninstall [--purge] [--yes]   卸载 Web（默认保留数据）

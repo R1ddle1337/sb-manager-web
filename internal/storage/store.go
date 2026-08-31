@@ -345,6 +345,54 @@ func putTask(execer interface {
 }
 func (s *Store) PutTask(task types.Task) error { return putTask(s.db, task) }
 
+func (s *Store) ListPendingTaskIDs(serverID string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT id FROM tasks WHERE server_id=? AND status=? ORDER BY created_at`, serverID, types.TaskPending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// ClaimTask atomically moves one pending task to running. It is used by local
+// workers so duplicate wake-ups cannot execute the same task twice.
+func (s *Store) ClaimTask(id string) (types.Task, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return types.Task{}, err
+	}
+	defer tx.Rollback()
+	var data []byte
+	var task types.Task
+	if err := tx.QueryRow(`SELECT data FROM tasks WHERE id=?`, id).Scan(&data); err != nil {
+		return task, err
+	}
+	if err := decode(data, &task); err != nil {
+		return task, err
+	}
+	if task.Status != types.TaskPending || task.CancelRequested {
+		return task, sql.ErrNoRows
+	}
+	now := time.Now().UTC()
+	task.Status = types.TaskRunning
+	task.StartedAt = &now
+	if err := putTask(tx, task); err != nil {
+		return task, err
+	}
+	if err := tx.Commit(); err != nil {
+		return task, err
+	}
+	return task, nil
+}
+
 // RecoverRunningTasks makes controller restarts resumable. A task claimed by
 // an Agent or local worker before a crash is safely returned to the pending
 // queue; the original attempt and an explanatory error remain in its record.
@@ -573,6 +621,59 @@ func (s *Store) ClaimPendingTask(serverID string, failureStopPercent int) (types
 		return types.Task{}, err
 	}
 	return types.Task{}, sql.ErrNoRows
+}
+
+// ConfirmAgentUpdate completes an update task when a restarted Agent reports
+// the requested version. Pending tasks are included so controller restarts do
+// not cause an already-installed update to run twice.
+func (s *Store) ConfirmAgentUpdate(serverID, version string) error {
+	if serverID == "" || version == "" {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT data FROM tasks WHERE server_id=? AND status IN (?,?)`, serverID, types.TaskPending, types.TaskRunning)
+	if err != nil {
+		return err
+	}
+	tasks := []types.Task{}
+	for rows.Next() {
+		var data []byte
+		var task types.Task
+		if err := rows.Scan(&data); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := decode(data, &task); err != nil {
+			rows.Close()
+			return err
+		}
+		if target, _ := task.Args["version"].(string); task.Action == "agent.update" && target == version {
+			tasks = append(tasks, task)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, task := range tasks {
+		now := time.Now().UTC()
+		task.FinishedAt = &now
+		task.Error = ""
+		task.Output = "Agent heartbeat confirmed version " + version
+		if task.CancelRequested {
+			task.Status = types.TaskCanceled
+			task.Error = "task canceled after Agent update"
+		} else {
+			task.Status = types.TaskSuccess
+		}
+		if err := putTask(tx, task); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) PutEnrollment(key string, token types.EnrollmentToken) error {

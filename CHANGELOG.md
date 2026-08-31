@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add capability-gated remote Agent self-updates with per-server controls, gray batch rollout, atomic binary replacement, supervisor restart and heartbeat confirmation.
+- Resume requeued local tasks after controller restarts, record their running timestamps, preserve the authenticated audit actor, and make local HTTPS status checks work with panel certificates.
+- Build GitHub Release artifacts through the shared Makefile so both the WebUI and Agent receive the tagged version.
 - Fix `systemd` status 203/EXEC by making the program directory traversable and verifying execution as the unprivileged service user before startup.
 - Stop reusing stale ACME contact emails; public-IP issuance now registers without optional contact by default.
 - Make automatic ACME setup transactional so registration/issuance failures do not modify the active panel configuration.

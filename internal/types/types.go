@@ -18,6 +18,7 @@ type Server struct {
 	Region             string    `json:"region,omitempty"`
 	Tags               []string  `json:"tags,omitempty"`
 	AgentVersion       string    `json:"agent_version,omitempty"`
+	AgentFeatures      []string  `json:"agent_features,omitempty"`
 	SBManagerVersion   string    `json:"sb_manager_version,omitempty"`
 	CoreVersion        string    `json:"core_version,omitempty"`
 	Arch               string    `json:"arch,omitempty"`

@@ -77,6 +77,19 @@ func New(cfg config.Config, store *storage.Store) (*Server, auth.InitialCredenti
 	return server, credential, nil
 }
 
+// ResumeLocalTasks schedules local work that was pending or requeued when the
+// controller started. ClaimTask performs the final atomic duplicate check.
+func (s *Server) ResumeLocalTasks() error {
+	ids, err := s.store.ListPendingTaskIDs(types.ServerLocal)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		go s.executeLocal(id)
+	}
+	return nil
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.page)
@@ -470,9 +483,9 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/backups":
 		s.backupsAPI(w, r, session)
 	case "/api/v1/batch/actions":
-		s.batchAction(w, r)
+		s.batchAction(w, r, session)
 	case "/api/v1/batch/preflight":
-		s.batchPreflight(w, r)
+		s.batchPreflight(w, r, session)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/api/v1/backups/") {
 			s.backupsAPI(w, r, session)
@@ -491,11 +504,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/servers/") {
-			s.serverAPI(w, r)
+			s.serverAPI(w, r, session)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/tasks/") {
-			s.taskAPI(w, r)
+			s.taskAPI(w, r, session)
 			return
 		}
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "接口不存在", nil)
@@ -1097,7 +1110,7 @@ func (s *Server) subscriptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"output": redact(result.Stdout)})
 }
 
-func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
+func (s *Server) batchAction(w http.ResponseWriter, r *http.Request, session types.Session) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
 		return
@@ -1115,6 +1128,10 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Args == nil {
 		request.Args = map[string]any{}
+	}
+	if request.Action == "agent.update" && s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以更新 Agent", nil)
+		return
 	}
 	if sensitiveAction(request.Action) {
 		writeError(w, http.StatusBadRequest, "SENSITIVE_ACTION_DIRECT_ONLY", "该操作不支持批量队列，请使用专用接口", nil)
@@ -1134,7 +1151,7 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 	if request.Strategy != "percentage" {
 		request.Percent = 100
 	}
-	if _, err := runner.ActionCommand(request.Action, request.Args); err != nil {
+	if err := validateQueuedAction(request.Action, request.Args); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
 		return
 	}
@@ -1143,7 +1160,15 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 	eligible := []string{}
 	for _, serverID := range request.ServerIDs {
 		server, err := s.store.GetServer(serverID)
-		if err != nil || (serverID != types.ServerLocal && !server.Online) {
+		if err != nil {
+			continue
+		}
+		if request.Action == "agent.update" {
+			version, _ := request.Args["version"].(string)
+			if serverID == types.ServerLocal || !server.Online || !supportsAgentUpdate(server) || server.AgentVersion == version {
+				continue
+			}
+		} else if serverID != types.ServerLocal && !server.Online {
 			continue
 		}
 		eligible = append(eligible, serverID)
@@ -1169,28 +1194,28 @@ func (s *Server) batchAction(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: "batch_" + batchID + "_" + serverID, BatchID: "batch_" + batchID, ExpectedStateDigest: expectedDigest(server)}
+		task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: "batch_" + batchID + "_" + serverID, BatchID: "batch_" + batchID, ExpectedStateDigest: expectedDigestForAction(server, request.Action)}
 		if s.store.PutTask(task) != nil {
 			continue
 		}
 		created = append(created, task)
 		if serverID == types.ServerLocal {
-			go s.executeLocal(task)
+			go s.executeLocal(task.ID)
 		}
 	}
 	if len(created) == 0 {
-		writeError(w, http.StatusConflict, "NO_ELIGIBLE_SERVERS", "没有可执行的在线服务器", nil)
+		writeError(w, http.StatusConflict, "NO_ELIGIBLE_SERVERS", "没有符合条件的可执行服务器", nil)
 		return
 	}
 	taskIDs := make([]string, 0, len(created))
 	for _, task := range created {
 		taskIDs = append(taskIDs, task.ID)
 	}
-	s.recordAudit("admin", request.Action, request.ServerIDs, taskIDs, "accepted")
+	s.recordAudit(session.Username, request.Action, request.ServerIDs, taskIDs, "accepted")
 	writeJSON(w, http.StatusAccepted, map[string]any{"batch_id": "batch_" + batchID, "strategy": request.Strategy, "percentage": request.Percent, "tasks": created})
 }
 
-func (s *Server) batchPreflight(w http.ResponseWriter, r *http.Request) {
+func (s *Server) batchPreflight(w http.ResponseWriter, r *http.Request, session types.Session) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 POST", nil)
 		return
@@ -1207,17 +1232,22 @@ func (s *Server) batchPreflight(w http.ResponseWriter, r *http.Request) {
 	if request.Args == nil {
 		request.Args = map[string]any{}
 	}
-	if _, err := runner.ActionCommand(request.Action, request.Args); err != nil {
+	if request.Action == "agent.update" && s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以更新 Agent", nil)
+		return
+	}
+	if err := validateQueuedAction(request.Action, request.Args); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
 		return
 	}
 	type candidate struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Online      bool   `json:"online"`
-		StateDigest string `json:"state_digest,omitempty"`
-		CoreVersion string `json:"core_version,omitempty"`
-		Reason      string `json:"reason,omitempty"`
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		Online       bool   `json:"online"`
+		StateDigest  string `json:"state_digest,omitempty"`
+		CoreVersion  string `json:"core_version,omitempty"`
+		AgentVersion string `json:"agent_version,omitempty"`
+		Reason       string `json:"reason,omitempty"`
 	}
 	result := struct {
 		Action   string      `json:"action"`
@@ -1230,9 +1260,18 @@ func (s *Server) batchPreflight(w http.ResponseWriter, r *http.Request) {
 			result.Skipped = append(result.Skipped, candidate{ID: id, Reason: "server not found"})
 			continue
 		}
-		item := candidate{ID: server.ID, Name: server.Name, Online: server.Online, StateDigest: server.StateDigest, CoreVersion: server.CoreVersion}
-		if server.ID != types.ServerLocal && !server.Online {
+		item := candidate{ID: server.ID, Name: server.Name, Online: server.Online, StateDigest: server.StateDigest, CoreVersion: server.CoreVersion, AgentVersion: server.AgentVersion}
+		if request.Action == "agent.update" && server.ID == types.ServerLocal {
+			item.Reason = "local controller is updated separately"
+			result.Skipped = append(result.Skipped, item)
+		} else if server.ID != types.ServerLocal && !server.Online {
 			item.Reason = "offline"
+			result.Skipped = append(result.Skipped, item)
+		} else if request.Action == "agent.update" && !supportsAgentUpdate(server) {
+			item.Reason = "self-update unsupported; run sudo sb-web update once"
+			result.Skipped = append(result.Skipped, item)
+		} else if request.Action == "agent.update" && server.AgentVersion == firstNonEmptyString(request.Args["version"]) {
+			item.Reason = "already current"
 			result.Skipped = append(result.Skipped, item)
 		} else {
 			result.Eligible = append(result.Eligible, item)
@@ -1579,7 +1618,7 @@ type actionRequest struct {
 	IdempotencyKey string         `json:"idempotency_key"`
 }
 
-func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
+func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request, session types.Session) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 4 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "servers" {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "服务器接口不存在", nil)
@@ -1609,7 +1648,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 			return
 		}
-		s.recordAudit("admin", "server.revoke", []string{serverID}, nil, "success")
+		s.recordAudit(session.Username, "server.revoke", []string{serverID}, nil, "success")
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": serverID})
 		return
 	}
@@ -1627,7 +1666,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 5 && parts[4] == "actions" && r.Method == http.MethodPost {
-		s.createAction(w, r, serverID)
+		s.createAction(w, r, serverID, session)
 		return
 	}
 	if len(parts) == 5 && parts[4] == "nodes" && r.Method == http.MethodPost {
@@ -1638,7 +1677,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		fields["protocol"] = firstNonEmptyString(fields["protocol"])
 		request := actionRequest{Action: "node.add", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")}
-		s.enqueueAction(w, serverID, request)
+		s.enqueueAction(w, serverID, request, session)
 		return
 	}
 	if len(parts) == 5 && parts[4] == "nodes" && r.Method == http.MethodGet {
@@ -1666,7 +1705,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		fields["id"] = parts[5]
 		request := actionRequest{Action: "node.set", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")}
-		s.enqueueAction(w, serverID, request)
+		s.enqueueAction(w, serverID, request, session)
 		return
 	}
 	if len(parts) == 6 && parts[4] == "nodes" && r.Method == http.MethodGet {
@@ -1719,7 +1758,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		request := actionRequest{Action: "node." + parts[6], Args: map[string]any{"id": parts[5]}, IdempotencyKey: r.Header.Get("Idempotency-Key")}
-		s.enqueueAction(w, serverID, request)
+		s.enqueueAction(w, serverID, request, session)
 		return
 	}
 	if len(parts) == 7 && parts[4] == "nodes" && parts[6] == "users" && r.Method == http.MethodGet {
@@ -1737,7 +1776,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fields["node_id"], fields["user_id"] = parts[5], firstNonEmptyString(fields["user_id"])
-		s.enqueueAction(w, serverID, actionRequest{Action: "user.add", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")})
+		s.enqueueAction(w, serverID, actionRequest{Action: "user.add", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")}, session)
 		return
 	}
 	if len(parts) == 9 && parts[4] == "nodes" && parts[6] == "users" && r.Method == http.MethodPost {
@@ -1746,7 +1785,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "用户操作不存在", nil)
 			return
 		}
-		s.enqueueAction(w, serverID, actionRequest{Action: "user." + verb, Args: map[string]any{"node_id": parts[5], "user_id": parts[7]}, IdempotencyKey: r.Header.Get("Idempotency-Key")})
+		s.enqueueAction(w, serverID, actionRequest{Action: "user." + verb, Args: map[string]any{"node_id": parts[5], "user_id": parts[7]}, IdempotencyKey: r.Header.Get("Idempotency-Key")}, session)
 		return
 	}
 	if len(parts) == 5 && parts[4] == "certificates" && r.Method == http.MethodPost {
@@ -1756,11 +1795,11 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		request := actionRequest{Action: "cert.issue", Args: fields, IdempotencyKey: r.Header.Get("Idempotency-Key")}
-		s.enqueueAction(w, serverID, request)
+		s.enqueueAction(w, serverID, request, session)
 		return
 	}
 	if len(parts) == 5 && parts[4] == "backup" && r.Method == http.MethodPost {
-		s.enqueueAction(w, serverID, actionRequest{Action: "backup.create", Args: map[string]any{}, IdempotencyKey: r.Header.Get("Idempotency-Key")})
+		s.enqueueAction(w, serverID, actionRequest{Action: "backup.create", Args: map[string]any{}, IdempotencyKey: r.Header.Get("Idempotency-Key")}, session)
 		return
 	}
 	if len(parts) == 5 && parts[4] == "capabilities" && r.Method == http.MethodGet {
@@ -1779,7 +1818,7 @@ func (s *Server) serverAPI(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "NOT_FOUND", "服务器接口不存在", nil)
 }
 
-func (s *Server) createAction(w http.ResponseWriter, r *http.Request, serverID string) {
+func (s *Server) createAction(w http.ResponseWriter, r *http.Request, serverID string, session types.Session) {
 	var request actionRequest
 	if err := decodeBody(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
@@ -1788,15 +1827,19 @@ func (s *Server) createAction(w http.ResponseWriter, r *http.Request, serverID s
 	if request.Args == nil {
 		request.Args = map[string]any{}
 	}
-	s.enqueueAction(w, serverID, request)
+	s.enqueueAction(w, serverID, request, session)
 }
 
-func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request actionRequest) {
+func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request actionRequest, session types.Session) {
 	if sensitiveAction(request.Action) {
 		writeError(w, http.StatusBadRequest, "SENSITIVE_ACTION_DIRECT_ONLY", "该操作必须使用专用接口，避免凭据进入任务队列", nil)
 		return
 	}
-	if _, err := runner.ActionCommand(request.Action, request.Args); err != nil {
+	if request.Action == "agent.update" && s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以更新 Agent", nil)
+		return
+	}
+	if err := validateQueuedAction(request.Action, request.Args); err != nil {
 		writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", err.Error(), nil)
 		return
 	}
@@ -1809,6 +1852,21 @@ func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request a
 		writeError(w, http.StatusConflict, "AGENT_OFFLINE", "服务器当前离线", nil)
 		return
 	}
+	if request.Action == "agent.update" {
+		version, _ := request.Args["version"].(string)
+		if serverID == types.ServerLocal {
+			writeError(w, http.StatusConflict, "AGENT_UPDATE_REMOTE_ONLY", "本机控制端请使用面板更新功能", nil)
+			return
+		}
+		if !supportsAgentUpdate(server) {
+			writeError(w, http.StatusConflict, "AGENT_UPDATE_UNSUPPORTED", "该 Agent 尚不支持远程自更新，请先在目标服务器执行一次 sudo sb-web update", nil)
+			return
+		}
+		if server.AgentVersion == version {
+			writeError(w, http.StatusConflict, "AGENT_ALREADY_CURRENT", "Agent 已是目标版本", nil)
+			return
+		}
+	}
 	if existing, err := s.store.FindTaskByIdempotency(request.IdempotencyKey); err == nil {
 		writeJSON(w, http.StatusOK, existing)
 		return
@@ -1818,15 +1876,15 @@ func (s *Server) enqueueAction(w http.ResponseWriter, serverID string, request a
 		writeError(w, http.StatusInternalServerError, "RANDOM_FAILED", err.Error(), nil)
 		return
 	}
-	task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: request.IdempotencyKey, ExpectedStateDigest: expectedDigest(server)}
+	task := types.Task{ID: "task_" + id, ServerID: serverID, Action: request.Action, Args: request.Args, Status: types.TaskPending, CreatedAt: time.Now().UTC(), IdempotencyKey: request.IdempotencyKey, ExpectedStateDigest: expectedDigestForAction(server, request.Action)}
 	if err := s.store.PutTask(task); err != nil {
 		writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 		return
 	}
 	if serverID == types.ServerLocal {
-		go s.executeLocal(task)
+		go s.executeLocal(task.ID)
 	}
-	s.recordAudit("admin", request.Action, []string{serverID}, []string{task.ID}, "accepted")
+	s.recordAudit(session.Username, request.Action, []string{serverID}, []string{task.ID}, "accepted")
 	writeJSON(w, http.StatusAccepted, task)
 }
 
@@ -1837,6 +1895,27 @@ func sensitiveAction(action string) bool {
 	default:
 		return false
 	}
+}
+
+func validateQueuedAction(action string, args map[string]any) error {
+	if action == "agent.update" {
+		version, _ := args["version"].(string)
+		if len(args) != 1 || !runner.ValidVersion(version) {
+			return errors.New("agent.update requires a valid version")
+		}
+		return nil
+	}
+	_, err := runner.ActionCommand(action, args)
+	return err
+}
+
+func supportsAgentUpdate(server types.Server) bool {
+	for _, feature := range server.AgentFeatures {
+		if feature == "self_update_v1" {
+			return true
+		}
+	}
+	return false
 }
 
 func firstNonEmptyString(value any) string {
@@ -1851,6 +1930,13 @@ func expectedDigest(server types.Server) string {
 		return ""
 	}
 	return server.StateDigest
+}
+
+func expectedDigestForAction(server types.Server, action string) string {
+	if action == "agent.update" {
+		return ""
+	}
+	return expectedDigest(server)
 }
 
 func cachedNode(status any, id string) (map[string]any, bool) {
@@ -1872,22 +1958,23 @@ func cachedNode(status any, id string) (map[string]any, bool) {
 	return nil, false
 }
 
-func (s *Server) executeLocal(task types.Task) {
+func (s *Server) executeLocal(id string) {
 	s.sem <- struct{}{}
 	defer func() { <-s.sem }()
-	if current, err := s.store.GetTask(task.ID); err == nil && (current.CancelRequested || current.Status == types.TaskCanceled) {
+	task, err := s.store.ClaimTask(id)
+	if err != nil {
 		return
 	}
 	if stop, _ := s.store.BatchShouldStop(task.BatchID, s.cfg.Tasks.FailureStopPct); stop {
-		s.finishTask(task.ID, false, "", "batch stopped after reaching failure threshold")
+		s.finishTask(id, false, "", "batch stopped after reaching failure threshold")
 		return
 	}
 	result, err := s.runLocal(task.Action, task.Args)
 	if err != nil {
-		s.finishTask(task.ID, false, result.Stdout, redact(result.Stderr+"\n"+err.Error()))
+		s.finishTask(id, false, result.Stdout, redact(result.Stderr+"\n"+err.Error()))
 		return
 	}
-	s.finishTask(task.ID, true, redact(result.Stdout), redact(result.Stderr))
+	s.finishTask(id, true, redact(result.Stdout), redact(result.Stderr))
 }
 
 func (s *Server) finishTask(id string, success bool, output, problem string) {
@@ -1923,7 +2010,7 @@ func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
 }
 
-func (s *Server) taskAPI(w http.ResponseWriter, r *http.Request) {
+func (s *Server) taskAPI(w http.ResponseWriter, r *http.Request, session types.Session) {
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 	if len(parts) < 4 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "tasks" {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "任务接口不存在", nil)
@@ -1943,6 +2030,10 @@ func (s *Server) taskAPI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "只支持 GET、POST /cancel 或 /retry", nil)
 		return
 	}
+	if task.Action == "agent.update" && s.auth.Role(session.Username) != "admin" {
+		writeError(w, http.StatusForbidden, "ROLE_FORBIDDEN", "只有管理员可以管理 Agent 更新任务", nil)
+		return
+	}
 	switch parts[4] {
 	case "cancel":
 		updated, cancelErr := s.store.CancelTask(id)
@@ -1950,7 +2041,7 @@ func (s *Server) taskAPI(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "TASK_NOT_CANCELLABLE", cancelErr.Error(), nil)
 			return
 		}
-		s.recordAudit("admin", "task.cancel", []string{updated.ServerID}, []string{updated.ID}, "accepted")
+		s.recordAudit(session.Username, "task.cancel", []string{updated.ServerID}, []string{updated.ID}, "accepted")
 		writeJSON(w, http.StatusAccepted, updated)
 	case "retry":
 		server, serverErr := s.store.GetServer(task.ServerID)
@@ -1962,15 +2053,15 @@ func (s *Server) taskAPI(w http.ResponseWriter, r *http.Request) {
 		if key == "" {
 			key = "retry_" + strconv.FormatInt(time.Now().UnixNano(), 10)
 		}
-		created, retryErr := s.store.CloneTask(id, key, expectedDigest(server))
+		created, retryErr := s.store.CloneTask(id, key, expectedDigestForAction(server, task.Action))
 		if retryErr != nil {
 			writeError(w, http.StatusConflict, "TASK_NOT_RETRYABLE", retryErr.Error(), nil)
 			return
 		}
 		if created.ServerID == types.ServerLocal {
-			go s.executeLocal(created)
+			go s.executeLocal(created.ID)
 		}
-		s.recordAudit("admin", "task.retry", []string{created.ServerID}, []string{created.ID}, "accepted")
+		s.recordAudit(session.Username, "task.retry", []string{created.ServerID}, []string{created.ID}, "accepted")
 		writeJSON(w, http.StatusAccepted, created)
 	default:
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "任务操作不存在", nil)
@@ -2054,23 +2145,28 @@ func (s *Server) agentAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var heartbeat struct {
-			AgentVersion     string `json:"agent_version"`
-			SBManagerVersion string `json:"sb_manager_version"`
-			CoreVersion      string `json:"core_version"`
-			Backend          string `json:"backend"`
-			Status           any    `json:"status"`
-			Capabilities     any    `json:"capabilities"`
-			NodeSnapshot     any    `json:"node_snapshot"`
-			StateDigest      string `json:"state_digest"`
-			StateSchema      int    `json:"state_schema"`
+			AgentVersion     string   `json:"agent_version"`
+			AgentFeatures    []string `json:"agent_features"`
+			SBManagerVersion string   `json:"sb_manager_version"`
+			CoreVersion      string   `json:"core_version"`
+			Backend          string   `json:"backend"`
+			Status           any      `json:"status"`
+			Capabilities     any      `json:"capabilities"`
+			NodeSnapshot     any      `json:"node_snapshot"`
+			StateDigest      string   `json:"state_digest"`
+			StateSchema      int      `json:"state_schema"`
 		}
 		if json.Unmarshal(body, &heartbeat) != nil {
 			writeError(w, http.StatusBadRequest, "VALIDATION_FAILED", "心跳 JSON 无效", nil)
 			return
 		}
-		server.AgentVersion, server.SBManagerVersion, server.CoreVersion, server.Backend = heartbeat.AgentVersion, heartbeat.SBManagerVersion, heartbeat.CoreVersion, heartbeat.Backend
+		server.AgentVersion, server.AgentFeatures, server.SBManagerVersion, server.CoreVersion, server.Backend = heartbeat.AgentVersion, heartbeat.AgentFeatures, heartbeat.SBManagerVersion, heartbeat.CoreVersion, heartbeat.Backend
 		server.Status, server.Capabilities, server.NodeSnapshot, server.StateDigest, server.StateSchema, server.Online, server.LastSeen = heartbeat.Status, heartbeat.Capabilities, heartbeat.NodeSnapshot, heartbeat.StateDigest, heartbeat.StateSchema, true, time.Now().UTC()
 		if err := s.store.PutServer(server); err != nil {
+			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
+			return
+		}
+		if err := s.store.ConfirmAgentUpdate(server.ID, heartbeat.AgentVersion); err != nil {
 			writeError(w, http.StatusInternalServerError, "STORAGE_ERROR", err.Error(), nil)
 			return
 		}

@@ -10,6 +10,9 @@ import (
 )
 
 func TestActionCommandWhitelist(t *testing.T) {
+	if !ValidVersion("1.2.3-alpha.1") || ValidVersion("1.2.3;reboot") {
+		t.Fatal("version validation is not strict")
+	}
 	if _, err := ActionCommand("not-allowed", nil); err == nil {
 		t.Fatal("unsupported action was accepted")
 	}
@@ -106,6 +109,75 @@ func TestOperationsCommandMappings(t *testing.T) {
 		args, err := ActionCommand(test.action, test.args)
 		if err != nil || strings.Join(args, " ") != test.want {
 			t.Fatalf("%s => %v (%v), want %s", test.action, args, err, test.want)
+		}
+	}
+}
+
+func TestAdditionalActionMappings(t *testing.T) {
+	tests := []struct {
+		action string
+		args   map[string]any
+		want   string
+	}{
+		{"status", nil, "--json status"},
+		{"node.rotate", map[string]any{"id": "node-a"}, "node rotate node-a"},
+		{"node.template.list", nil, "--json node template list"},
+		{"core.capabilities", nil, "--json core capabilities"},
+		{"core.update", map[string]any{"version": "1.14.0"}, "core update 1.14.0"},
+		{"core.policy", map[string]any{"policy": "stable"}, "core policy stable"},
+		{"core.auto", nil, "core auto"},
+		{"doctor.repair-safe", nil, "doctor --repair-safe"},
+		{"restore", map[string]any{"archive": "/tmp/backup.tar.gz"}, "restore /tmp/backup.tar.gz --yes"},
+		{"logs", map[string]any{"target": "singbox", "lines": float64(200)}, "logs singbox 200"},
+		{"node.share", map[string]any{"id": "node-a", "user_id": "user-a", "qr": true}, "share node-a --user user-a --qr"},
+		{"api.enable", map[string]any{"port": float64(9090), "dashboard": true}, "api enable 9090 --dashboard"},
+		{"subscription.create", map[string]any{"duration": "24h", "mode": "tun"}, "subscription create 24h tun"},
+		{"subscription.revoke", map[string]any{"token": "1234567890abcdef"}, "subscription revoke 1234567890abcdef"},
+		{"user.add", map[string]any{"node_id": "node-a", "user_id": "user-a", "name": "User A"}, "user add node-a user-a User A"},
+		{"user.rotate", map[string]any{"node_id": "node-a", "user_id": "user-a"}, "user rotate node-a user-a"},
+		{"cert.issue", map[string]any{"domain": "edge.example.com", "email": "ops@example.com"}, "cert issue edge.example.com ops@example.com"},
+		{"cert.inspect", map[string]any{"domain": "edge.example.com"}, "--json cert inspect edge.example.com"},
+		{"mux.enable", map[string]any{"port": float64(8443)}, "mux enable 8443"},
+		{"mux.route.add", map[string]any{"node_id": "node-a", "sni": "edge.example.com", "backend_port": float64(9443)}, "mux route add node-a edge.example.com 9443"},
+		{"tunnel.fixed", map[string]any{"node_id": "node-a", "domain": "tunnel.example.com", "token": "secret", "client_address": "127.0.0.1:8080"}, "tunnel fixed node-a tunnel.example.com secret 127.0.0.1:8080"},
+		{"tunnel.set-token", map[string]any{"token": "secret-token"}, "tunnel set-token secret-token"},
+		{"notify.test", nil, "notify test"},
+		{"traffic.status", map[string]any{"node_id": "node-a"}, "--json traffic status node-a"},
+		{"traffic.set", map[string]any{"node_id": "node-a", "quota": "100G", "rate": "50M"}, "traffic set node-a --quota 100G --rate 50M"},
+		{"traffic.reset", map[string]any{"node_id": "node-a"}, "traffic reset node-a --yes"},
+		{"settings.address", map[string]any{"address": "edge.example.com"}, "settings address edge.example.com"},
+		{"settings.outbound-ip", map[string]any{"strategy": "prefer_ipv4"}, "settings outbound-ip prefer_ipv4"},
+		{"settings.dns", map[string]any{"kind": "timeout", "value": "10s"}, "settings dns timeout 10s"},
+		{"probe", map[string]any{"node_id": "node-a"}, "probe node-a"},
+		{"cloudflared.update", nil, "cloudflared update"},
+		{"acme.update", nil, "acme update"},
+		{"repair", nil, "repair --safe"},
+	}
+	for _, test := range tests {
+		args, err := ActionCommand(test.action, test.args)
+		if err != nil || strings.Join(args, " ") != test.want {
+			t.Fatalf("%s => %v (%v), want %s", test.action, args, err, test.want)
+		}
+	}
+}
+
+func TestAdditionalActionValidation(t *testing.T) {
+	tests := []struct {
+		action string
+		args   map[string]any
+	}{
+		{"node.enable", map[string]any{"id": "INVALID ID"}},
+		{"api.enable", map[string]any{"port": float64(70000)}},
+		{"subscription.create", map[string]any{"duration": "30d", "mode": "mixed"}},
+		{"cert.issue", map[string]any{"domain": "not-a-domain"}},
+		{"mux.route.add", map[string]any{"node_id": "node-a", "sni": "invalid"}},
+		{"tunnel.set-token", map[string]any{"token": "bad\ntoken"}},
+		{"traffic.set", map[string]any{"node_id": "node-a"}},
+		{"settings.outbound-ip", map[string]any{"strategy": "any"}},
+	}
+	for _, test := range tests {
+		if args, err := ActionCommand(test.action, test.args); err == nil {
+			t.Fatalf("%s unexpectedly accepted: %v", test.action, args)
 		}
 	}
 }

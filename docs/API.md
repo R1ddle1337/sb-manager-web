@@ -107,6 +107,15 @@ Supported system actions include status/capabilities reads plus:
 - `backup.create`
 - `health.check`
 - `doctor`, `doctor.repair-safe`
+- `agent.update`（仅 admin、仅远端 Agent，参数为 `{"version":"VERSION"}`）
+
+`agent.update` 不调用 `sb`，也不携带 sb-manager 状态摘要。Agent 使用发布安装器
+原子替换自己的 `sb-web` 二进制，先提交任务结果，再退出并由 systemd/OpenRC
+重新拉起。新心跳会确认目标版本；即使更新结果响应在重启时丢失，控制端也会
+根据心跳补全任务状态。
+
+首次部署该能力时，旧 Agent 尚不会上报 `self_update_v1`，需要在对应服务器手动
+执行一次 `sudo sb-web update`。此后控制台才会开放单机和批量更新按钮。
 
 ## Nodes
 
@@ -181,6 +190,9 @@ Batch request:
 `percentage` (deterministic prefix of eligible servers). The response returns
 the selected strategy and creates one independently observable task per
 selected server.
+
+Agent 更新同样支持 `all`、`canary` 和 `percentage`。本机控制端、离线 Agent、
+已经处于目标版本的 Agent，以及尚未支持自更新的旧 Agent 会在 preflight 中被跳过。
 
 Task lifecycle endpoints:
 

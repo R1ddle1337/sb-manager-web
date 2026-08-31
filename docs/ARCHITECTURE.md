@@ -84,6 +84,14 @@ Transport uses normal HTTPS certificate verification. Application request signat
 
 Each heartbeat also carries a SHA-256 digest of the target's state file. Mutating tasks include the digest observed by the controller; the Agent fails a task instead of applying it when the state has drifted locally.
 
+Agents that advertise `self_update_v1` can receive the admin-only
+`agent.update` task. The Agent runs the same verified Release installer with
+service restarts deferred, reports the task result, and then exits so its
+systemd/OpenRC supervisor starts the new binary with the existing identity.
+The next heartbeat confirms the target version and reconciles an update task
+whose final result response was lost during restart. Older Agents require one
+manual `sudo sb-web update` before this capability becomes available.
+
 No node password, certificate private key, Snell PSK or Realm token is included in heartbeat data.
 The heartbeat may include a non-secret node configuration snapshot (protocol,
 ports and 1.14 options) so remote detail pages can edit the same fields; user

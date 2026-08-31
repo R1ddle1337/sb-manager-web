@@ -18,6 +18,8 @@
   let refreshTimer = null;
   let serverFilter = '';
   let webUpdateBusy = false;
+  let latestAgentVersion = '';
+  let canManageAgentUpdates = false;
   async function load() {
     if (loading) return;
     loading = true;
@@ -63,6 +65,10 @@
     try {
       const info = await json('/api/v1/web/update');
       current.textContent = info.current || '未知';
+      latestAgentVersion = info.latest || '';
+      canManageAgentUpdates = info.can_update === true;
+      $('agent-update-option').hidden = !(canManageAgentUpdates && latestAgentVersion);
+      renderServers(lastServers);
       updateButton.hidden = !(info.can_update && info.update_supported && info.update_available);
       if (!info.update_supported) {
         status.textContent = '特权更新服务不可用，请在服务器终端执行 sudo sb-web update。';
@@ -73,6 +79,10 @@
       }
     } catch (error) {
       current.textContent = '未知';
+      latestAgentVersion = '';
+      canManageAgentUpdates = false;
+      $('agent-update-option').hidden = true;
+      renderServers(lastServers);
       updateButton.hidden = true;
       status.textContent = `检查更新失败：${error.message}`;
     }
@@ -102,9 +112,32 @@
     document.querySelectorAll('.task-detail').forEach((button) => button.addEventListener('click', () => showTaskDetail(button.dataset.taskId)));
   }
   function renderServers(servers) {
-    const filtered = serverFilter ? servers.filter((server) => `${server.id} ${server.name} ${server.address} ${server.region}`.toLowerCase().includes(serverFilter.toLowerCase())) : servers;
+    const filtered = serverFilter ? servers.filter((server) => `${server.id} ${server.name} ${server.address} ${server.region} ${server.agent_version}`.toLowerCase().includes(serverFilter.toLowerCase())) : servers;
     if (!filtered.length) { $('servers-list').textContent = serverFilter ? '没有匹配的服务器' : '暂无服务器'; return; }
-    $('servers-list').innerHTML = `<table><thead><tr><th>选择</th><th>名称</th><th>地址</th><th>区域</th><th>状态</th><th>核心</th><th>最近心跳</th></tr></thead><tbody>${filtered.map((server) => `<tr><td><input class="server-select" type="checkbox" value="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}></td><td><a href="/servers/${encodeURIComponent(server.id)}"><strong>${escapeHTML(server.name)}</strong></a></td><td>${escapeHTML(server.address || server.id)}</td><td>${escapeHTML(server.region)}</td><td>${server.online ? '<span class="ok">在线</span>' : '<span class="bad">离线</span>'}</td><td>${escapeHTML(server.core_version)}</td><td>${escapeHTML(server.last_seen)}</td></tr>`).join('')}</tbody></table>`;
+    $('servers-list').innerHTML = `<table><thead><tr><th>选择</th><th>名称</th><th>地址</th><th>区域</th><th>状态</th><th>核心</th><th>Agent</th><th>最近心跳</th><th>操作</th></tr></thead><tbody>${filtered.map((server) => {
+      const remote = server.id !== 'local';
+      const features = Array.isArray(server.agent_features) ? server.agent_features : [];
+      const supportsUpdate = features.includes('self_update_v1');
+      const outdated = remote && latestAgentVersion && server.agent_version !== latestAgentVersion;
+      let updateControl = '-';
+      if (remote && !supportsUpdate) updateControl = '<span class="muted">需手动升级一次</span>';
+      if (remote && supportsUpdate && !latestAgentVersion) updateControl = '<span class="muted">等待版本检查</span>';
+      if (remote && supportsUpdate && latestAgentVersion && !outdated) updateControl = '<span class="ok">已是最新</span>';
+      if (remote && supportsUpdate && outdated && canManageAgentUpdates) updateControl = `<button class="agent-update" data-server-id="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}>更新至 ${escapeHTML(latestAgentVersion)}</button>`;
+      if (remote && supportsUpdate && outdated && !canManageAgentUpdates) updateControl = '<span class="muted">有新版本</span>';
+      return `<tr><td><input class="server-select" type="checkbox" value="${escapeHTML(server.id)}" ${server.online ? '' : 'disabled'}></td><td><a href="/servers/${encodeURIComponent(server.id)}"><strong>${escapeHTML(server.name)}</strong></a></td><td>${escapeHTML(server.address || server.id)}</td><td>${escapeHTML(server.region)}</td><td>${server.online ? '<span class="ok">在线</span>' : '<span class="bad">离线</span>'}</td><td>${escapeHTML(server.core_version)}</td><td>${escapeHTML(server.agent_version || (remote ? '未知' : '-'))}</td><td>${escapeHTML(server.last_seen)}</td><td>${updateControl}</td></tr>`;
+    }).join('')}</tbody></table>`;
+    document.querySelectorAll('.agent-update').forEach((button) => button.addEventListener('click', () => updateAgent(button)));
+  }
+  async function updateAgent(button) {
+    const serverID = button.dataset.serverId;
+    if (!latestAgentVersion || !window.confirm(`确认将 ${serverID} 的 Agent 更新到 ${latestAgentVersion}？更新后 Agent 会自动重启并重新连接。`)) return;
+    button.disabled = true;
+    try {
+      const task = await json(`/api/v1/servers/${encodeURIComponent(serverID)}/actions`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ action: 'agent.update', args: { version: latestAgentVersion }, idempotency_key: `agent.update-${serverID}-${latestAgentVersion}-${Date.now()}` }) });
+      showError(`Agent 更新任务已创建：${task.id}`, true);
+      setTimeout(load, 1000);
+    } catch (error) { showError(error.message); } finally { button.disabled = false; }
   }
   async function action(name, button) {
     button.disabled = true;
@@ -268,13 +301,15 @@
     const actionName = new FormData(event.target).get('action');
     const strategy = $('batch-strategy').value;
     const percentage = Number($('batch-percentage').value || 100);
+    const args = actionName === 'agent.update' ? { version: latestAgentVersion } : {};
+    if (actionName === 'agent.update' && (!canManageAgentUpdates || !latestAgentVersion)) { showError('暂时无法获取可用的 Agent 目标版本。'); return; }
     try {
-      const preview = await json('/api/v1/batch/preflight', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ server_ids: selected, action: actionName, args: {} }) });
+      const preview = await json('/api/v1/batch/preflight', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ server_ids: selected, action: actionName, args }) });
       const eligible = preview.eligible || [];
       const skipped = preview.skipped || [];
       const skippedText = skipped.length ? `，跳过 ${skipped.length} 台（${skipped.map((item) => item.id + ': ' + item.reason).join('；')}）` : '';
       if (!eligible.length || !window.confirm(`预检查：${eligible.length} 台可执行${skippedText}。确认继续？`)) return;
-      const result = await json('/api/v1/batch/actions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ server_ids: selected, action: actionName, args: {}, strategy, percentage }) });
+      const result = await json('/api/v1/batch/actions', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf() }, body: JSON.stringify({ server_ids: selected, action: actionName, args, strategy, percentage }) });
       showError(`批量任务 ${result.batch_id} 已创建，共 ${result.tasks.length} 项。`, true);
       setTimeout(load, 1200);
     } catch (error) { showError(error.message); }

@@ -31,6 +31,10 @@ var safeID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,47}$`)
 var safeProtocol = regexp.MustCompile(`^(vmess|ss|anytls|hy2|trojan|tuic|vless|naive|shadowtls|snell)$`)
 var safeDomain = regexp.MustCompile(`^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$`)
 
+func ValidVersion(value string) bool {
+	return safeVersion.MatchString(value)
+}
+
 func (r Runner) Run(ctx context.Context, args ...string) (Result, error) {
 	if r.Path == "" {
 		return Result{}, errors.New("sb path is empty")
@@ -130,7 +134,7 @@ func ActionCommand(action string, args map[string]any) ([]string, error) {
 	case "core.update":
 		version, _ := args["version"].(string)
 		if version != "" {
-			if !safeVersion.MatchString(version) {
+			if !ValidVersion(version) {
 				return nil, errors.New("invalid core version")
 			}
 			return []string{"core", "update", version}, nil

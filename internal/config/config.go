@@ -34,6 +34,7 @@ type TaskConfig struct {
 }
 
 type Config struct {
+	ConfigPath   string      `json:"-"`
 	WebVersion   string      `json:"-"`
 	Listen       string      `json:"listen"`
 	SBPath       string      `json:"sb_path"`
@@ -71,6 +72,7 @@ func Load(path string) (Config, error) {
 	if path == "" {
 		path = "/etc/sb-manager-web/config.json"
 	}
+	cfg.ConfigPath = path
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		cfg.Tasks.DefaultTimeout = 10 * time.Minute

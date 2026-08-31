@@ -2,8 +2,11 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +60,60 @@ func TestRecoverRunningTasks(t *testing.T) {
 		t.Fatalf("unexpected recovered task: %#v %v", recovered, err)
 	}
 	store.Close()
+}
+
+func TestClaimTaskMarksRunningOnce(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	task := types.Task{ID: "task_claim", ServerID: types.ServerLocal, Action: "health.check", Status: types.TaskPending, CreatedAt: time.Now().UTC()}
+	if err := store.PutTask(task); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := store.ListPendingTaskIDs(types.ServerLocal)
+	if err != nil || len(ids) != 1 || ids[0] != task.ID {
+		t.Fatalf("pending ids=%v err=%v", ids, err)
+	}
+	claimed, err := store.ClaimTask(task.ID)
+	if err != nil || claimed.Status != types.TaskRunning || claimed.StartedAt == nil {
+		t.Fatalf("claimed task=%#v err=%v", claimed, err)
+	}
+	if _, err := store.ClaimTask(task.ID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("duplicate claim returned %v", err)
+	}
+}
+
+func TestConfirmAgentUpdateCompletesPendingAndRunningTasks(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "web.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	for _, task := range []types.Task{
+		{ID: "update_pending", ServerID: "srv_update", Action: "agent.update", Args: map[string]any{"version": "2.0.0"}, Status: types.TaskPending, CreatedAt: now},
+		{ID: "update_running", ServerID: "srv_update", Action: "agent.update", Args: map[string]any{"version": "2.0.0"}, Status: types.TaskRunning, CreatedAt: now},
+		{ID: "other_running", ServerID: "srv_update", Action: "bbr.enable", Status: types.TaskRunning, CreatedAt: now},
+	} {
+		if err := store.PutTask(task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.ConfirmAgentUpdate("srv_update", "2.0.0"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"update_pending", "update_running"} {
+		task, err := store.GetTask(id)
+		if err != nil || task.Status != types.TaskSuccess || task.FinishedAt == nil || !strings.Contains(task.Output, "2.0.0") {
+			t.Fatalf("confirmed task %s=%#v err=%v", id, task, err)
+		}
+	}
+	other, err := store.GetTask("other_running")
+	if err != nil || other.Status != types.TaskRunning {
+		t.Fatalf("unrelated task changed: %#v err=%v", other, err)
+	}
 }
 
 func TestSQLiteBackup(t *testing.T) {

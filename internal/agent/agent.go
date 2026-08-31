@@ -36,17 +36,19 @@ type identity struct {
 }
 
 type Agent struct {
-	cfg      config.Config
-	key      ed25519.PrivateKey
-	server   string
-	client   *http.Client
-	runner   runner.Runner
-	tlsCert  tls.Certificate
-	tlsCA    *x509.CertPool
-	tlsCAPEM string
+	cfg        config.Config
+	key        ed25519.PrivateKey
+	server     string
+	client     *http.Client
+	runner     runner.Runner
+	selfUpdate func(context.Context, string) (runner.Result, error)
+	tlsCert    tls.Certificate
+	tlsCA      *x509.CertPool
+	tlsCAPEM   string
 }
 
 var Version = "dev"
+var errAgentRestart = errors.New("agent update installed; restart required")
 
 func New(cfg config.Config) (*Agent, error) {
 	identityPath := cfg.Agent.IdentityFile
@@ -76,6 +78,7 @@ func New(cfg config.Config) (*Agent, error) {
 	}
 	cfg.Agent.IdentityFile = identityPath
 	a := &Agent{cfg: cfg, key: key, server: saved.ServerID, client: &http.Client{Timeout: 35 * time.Second}, runner: runner.Runner{Path: cfg.SBPath, Timeout: cfg.Tasks.DefaultTimeout}}
+	a.selfUpdate = a.runSelfUpdate
 	if saved.ClientCertificate != "" || saved.ClientKey != "" || saved.ClientCA != "" {
 		if err := a.configureTLS(saved.ClientCertificate, saved.ClientKey, saved.ClientCA); err != nil {
 			return nil, err
@@ -179,7 +182,9 @@ func (a *Agent) Run(ctx context.Context) error {
 				fmt.Fprintf(os.Stderr, "sb-web agent heartbeat: %v\n", err)
 				continue
 			}
-			if err := a.poll(ctx); err != nil {
+			if err := a.poll(ctx); errors.Is(err, errAgentRestart) {
+				return nil
+			} else if err != nil {
 				fmt.Fprintf(os.Stderr, "sb-web agent poll: %v\n", err)
 			}
 			if err := a.maybeRotateCertificate(ctx); err != nil {
@@ -248,7 +253,11 @@ func (a *Agent) Sync(ctx context.Context) error {
 	if err := a.heartbeat(ctx); err != nil {
 		return err
 	}
-	return a.poll(ctx)
+	err := a.poll(ctx)
+	if errors.Is(err, errAgentRestart) {
+		return nil
+	}
+	return err
 }
 
 // Register performs one-time enrollment. The join command calls it before
@@ -310,6 +319,7 @@ func (a *Agent) heartbeat(ctx context.Context) error {
 	managerResult, _ := a.runner.Run(ctx, "version")
 	body := map[string]any{
 		"agent_version":      Version,
+		"agent_features":     []string{"self_update_v1"},
 		"sb_manager_version": strings.TrimSpace(managerResult.Stdout),
 		"core_version":       capsValue(caps, "version"),
 		"backend":            "",
@@ -362,17 +372,32 @@ func (a *Agent) poll(ctx context.Context) error {
 	if response.Task == nil {
 		return nil
 	}
-	if response.Task.ExpectedStateDigest != "" {
+	if response.Task.Action != "agent.update" && response.Task.ExpectedStateDigest != "" {
 		current, _, digestErr := stateSnapshot(a.cfg.StateFile)
 		if digestErr != nil || current != response.Task.ExpectedStateDigest {
 			_, err = a.post(ctx, "/api/v1/agent/result", map[string]any{"task_id": response.Task.ID, "status": types.TaskFailed, "output": "", "error": "state drift detected; refresh the server before retrying"}, true)
 			return err
 		}
 	}
-	command, commandErr := runner.ActionCommand(response.Task.Action, response.Task.Args)
 	result := runner.Result{}
-	if commandErr == nil {
-		result, commandErr = a.runner.Run(ctx, command...)
+	var commandErr error
+	restart := false
+	if response.Task.Action == "agent.update" {
+		version, _ := response.Task.Args["version"].(string)
+		if !runner.ValidVersion(version) {
+			commandErr = errors.New("invalid Agent update version")
+		} else if version == Version {
+			result.Stdout = "Agent is already running version " + version
+		} else {
+			result, commandErr = a.selfUpdate(ctx, version)
+			restart = commandErr == nil
+		}
+	} else {
+		command, err := runner.ActionCommand(response.Task.Action, response.Task.Args)
+		commandErr = err
+		if commandErr == nil {
+			result, commandErr = a.runner.Run(ctx, command...)
+		}
 	}
 	status := types.TaskSuccess
 	problem := ""
@@ -380,7 +405,36 @@ func (a *Agent) poll(ctx context.Context) error {
 		status, problem = types.TaskFailed, commandErr.Error()+"\n"+result.Stderr
 	}
 	_, err = a.post(ctx, "/api/v1/agent/result", map[string]any{"task_id": response.Task.ID, "status": status, "output": result.Stdout, "error": problem}, true)
+	if restart {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sb-web agent update result: %v\n", err)
+		}
+		return errAgentRestart
+	}
 	return err
+}
+
+func (a *Agent) runSelfUpdate(ctx context.Context, version string) (runner.Result, error) {
+	if !runner.ValidVersion(version) {
+		return runner.Result{}, errors.New("invalid Agent update version")
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return runner.Result{}, fmt.Errorf("locate Agent executable: %w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+		executable = resolved
+	}
+	args := selfUpdateArgs(a.cfg.ConfigPath, version)
+	return (runner.Runner{Path: executable, Timeout: a.cfg.Tasks.DefaultTimeout}).Run(ctx, args...)
+}
+
+func selfUpdateArgs(configPath, version string) []string {
+	args := []string{"update"}
+	if configPath != "" {
+		args = append(args, "--config", configPath)
+	}
+	return append(args, "--version", version, "--no-restart")
 }
 
 func stateSnapshot(path string) (string, int, error) {
